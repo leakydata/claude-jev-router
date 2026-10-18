@@ -1,5 +1,5 @@
 // Every routing decision knob lives here, so the whole policy is reviewable in one file.
-import { choice, score } from "@typesafe-ai/sdk";
+import { choice, noul, score } from "@typesafe-ai/sdk";
 
 /**
  * Model tiers, cheapest first. `id` is what goes into the API request body; `family` is the
@@ -50,7 +50,7 @@ export const tierSpec = (name) => TIERS.find((t) => t.name === name);
  * its presence in a request is an exact signal that the user wants this turn routed. Any
  * other model means the user picked one themselves and it must be passed straight through.
  */
-export const AUTO_MODEL = "claude-jev";
+export const AUTO_MODEL = "cj-auto";
 
 /** Whether a request should be routed, or passed through as the user's own choice. */
 export const isAuto = (model) => model === AUTO_MODEL;
@@ -85,9 +85,25 @@ export const THRESHOLDS = {
   jevTimeoutMs: 1500,
   jevDeadlineMs: 3000,
   jevMaxRetries: 1,
+  /**
+   * The status line suggests /clear or /compact when Jev is this sure a prompt starts a new
+   * task, and only once the conversation is big enough for a reset to matter.
+   */
+  newTaskProbability: 0.8,
+  newTaskMinContextTokens: 100000,
 };
 
-export const CONTEXT_WINDOW_TOKENS = 200000;
+export const CONTEXT_WINDOW_TOKENS = 1000000;
+
+/**
+ * Auto-compact window seeded for the sentinel on first launch. Every request re-reads the
+ * whole conversation, so context size dominates cost. Replaying two weeks of real sessions
+ * at 5.5-generation prices: Claude Code's own ~967K threshold saved 1%, 600K saved 30%, 400K
+ * 43%, 300K 49% and 200K 49%, while the number of compactions roughly doubled at each step
+ * down. 400K takes most of the saving at a window twice the size of the long-standing 200K.
+ * Change it per user with `/autocompact`, or per launch with `--autocompact`.
+ */
+export const DEFAULT_COMPACT_WINDOW = 400000;
 
 const COMPLEXITY_SCALE = [
   "None",
@@ -136,6 +152,16 @@ export const QUESTIONS = {
       JUDGE_THE_WORK,
     ],
     COMPLEXITY_SCALE,
+  ),
+  new_task: noul(
+    [
+      "Does the `request` start a new, separate task that needs nothing from `conversation_before_request`?",
+      "Answer no when the request refers to, continues, checks, or builds on any earlier request, reply, file, or result, even briefly.",
+    ],
+    {
+      true: "Unrelated to the earlier conversation; clearing it would lose nothing this request needs.",
+      false: "Refers to or builds on the earlier conversation, or there is no earlier conversation.",
+    },
   ),
   tool_complexity: score(
     [

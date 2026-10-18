@@ -4,7 +4,7 @@ Automatic per-turn model routing for Claude Code. Jev sends simple work to Haiku
 work to Opus, while preserving Claude Code's native interface, tools, sessions, permissions,
 and authentication.
 
-`claude-jev` launches the real Claude Code CLI. Jev only chooses the model for a fresh user
+`cj` launches the real Claude Code CLI. Jev only chooses the model for a fresh user
 turn, and the decision is shown in the status line.
 
 A Claude-only fork of [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
@@ -22,27 +22,27 @@ echo "JEV_API_KEY=..." > ~/.claude-jev.env
 ```
 
 `npm install -g .` links the global commands to this checkout, so edits take effect at the
-next launch. Without it, run `node bin/claude-jev.mjs`.
+next launch. Without it, run `node bin/cj.mjs`.
 
 Get a key from [TypeSafe](https://docs.typesafe.ai). Then launch from any repository:
 
 ```bash
-claude-jev
+cj
 ```
 
 No Anthropic API key is required when Claude Code is already logged in with a subscription.
 Every CLI argument is forwarded:
 
 ```bash
-claude-jev --resume
-claude-jev -p "fix the failing test"
+cj --resume
+cj -p "fix the failing test"
 ```
 
 ## Claude Code interface
 
 ![Claude Jev in the Claude Code model picker](docs/model-picker.png)
 
-`claude-jev` launches Claude Code with **Claude Jev** selected in `/model`. Selecting another
+`cj` launches Claude Code with **Claude Jev** selected in `/model`. Selecting another
 model pauses routing; selecting **Claude Jev** resumes it.
 
 The injected status line shows the model used for the last turn:
@@ -56,7 +56,7 @@ Claude Code otherwise remains unchanged, including its keybindings, tools, permi
 `/compact`, `/resume`, and session handling. An existing custom `statusLine` is preserved;
 set `JEV_NO_STATUSLINE=1` to disable Jev's status line.
 
-The bundled `/claude-jev-explain` skill shows the factors behind the last routing decision:
+The bundled `/cj-explain` skill shows the factors behind the last routing decision:
 
 ```text
 ┌─────────────────────────────────────────┐
@@ -86,7 +86,7 @@ response saved when routing occurred. Invoking it does not ask Jev to score the 
 
 ### Explanation data location
 
-`claude-jev` keeps up to 20 recent routing exchanges in one JSON file per Claude Code session
+`cj` keeps up to 20 recent routing exchanges in one JSON file per Claude Code session
 under Node.js's operating-system temporary directory:
 
 | Platform | Default location |
@@ -106,23 +106,56 @@ exact request and response, so they are readable only by you (the directory is c
 mode 700 and each file with 600). Files not updated for 7 days are deleted automatically, and
 the operating system may also remove them during normal temporary-file cleanup.
 
-> Choosing a model with `Enter` can save it as Claude Code's default. `claude-jev` restores
-> the previous default on exit so the `claude-jev` model id cannot break plain `claude`.
+> Choosing a model with `Enter` can save it as Claude Code's default. `cj` restores
+> the previous default on exit so the `cj-auto` model id cannot break plain `claude`.
 
 ## How it works
 
-`claude-jev` starts a loopback proxy, points Claude Code at it with `ANTHROPIC_BASE_URL`, and
+`cj` starts a loopback proxy, points Claude Code at it with `ANTHROPIC_BASE_URL`, and
 forwards Claude Code's existing authorization headers without reading, storing, or modifying
 them.
 
 ```text
-you -> Claude Code -> claude-jev proxy -> Anthropic
+you -> Claude Code -> cj proxy -> Anthropic
                          |
                          +-> Jev: choose a model
 ```
 
-`claude-jev` is the routing sentinel model id. Any concrete model selected by the user passes
+`cj-auto` is the routing sentinel model id. Any concrete model selected by the user passes
 through unchanged.
+
+## Token savings
+
+Every request re-reads the whole conversation from the prompt cache, so in long sessions the
+size of the context, not the choice of model, decides the bill. Measured over two weeks of real
+sessions, cache reads were 72% of the cost and output 6.5%. `cj` acts on that:
+
+- **MCP tool search stays on.** Claude Code turns tool search off behind a custom
+  `ANTHROPIC_BASE_URL`; `cj` sets `ENABLE_TOOL_SEARCH=true`, so MCP tool definitions load on
+  demand instead of riding along on every request. On one machine this cut the tool
+  definitions in the first request from about 144K tokens to about 7K.
+- **Compaction works, at 400K.** `cj` declares the routed models' 1M window
+  (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`) so Claude Code's proactive and idle compaction run, and
+  seeds an auto-compact window of 400K the first time it starts. Replaying two weeks of
+  sessions, Claude Code's own ~967K threshold saved 1%, 600K saved 30%, 400K saved 43%, and
+  lower windows added many more compactions for little more.
+- **The model is picked per turn** by Jev, using the conversation so far.
+- **New-task hint.** When Jev is confident a prompt starts a separate task and the conversation
+  is over 100K tokens, the status line suggests `/clear` or `/compact`. Nothing happens unless
+  you run one.
+
+Compaction is your choice:
+
+| You want | Do |
+| --- | --- |
+| A different window from now on | `/autocompact 600k` in a `cj` session |
+| Claude Code's normal threshold from now on | `/autocompact auto` |
+| A different window for one launch | `cj --autocompact 300k` |
+| To compact or clear right now | `/compact` or `/clear` |
+
+`cj` writes the 400K default only once, to `modelSettings["cj-auto"]` in
+`~/.claude/settings.json`, which is the same place `/autocompact` saves to, so a choice you
+make there sticks. Other models' settings are not touched.
 
 ## Routing policy
 
@@ -158,6 +191,8 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_DEBUG` | Logs decisions and rewrites to `~/.claude-jev.log` in interactive sessions. |
 | `JEV_DUMP` | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Disables the injected status line. |
+| `ENABLE_TOOL_SEARCH` | `cj` sets `true`; set `false` to load every MCP tool upfront. |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `cj` sets `1000000`, the routed models' window. |
 
 Existing environment variables have highest precedence, followed by `.env` in the launch
 directory, then `~/.claude-jev.env`.
@@ -183,7 +218,7 @@ echo "JEV_API_KEY=..." > .env
 
 npm test
 node test/live-routing.mjs
-node bin/claude-jev.mjs -p "what is 2+2?"
+node bin/cj.mjs -p "what is 2+2?"
 ```
 
 The test suite covers policy, the request format, model rewriting, capability handling,

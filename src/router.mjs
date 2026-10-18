@@ -64,6 +64,7 @@ export async function askJev({ prompt, current, contextTokens, models, history }
         toolComplexity: tool_complexity.score / COMPLEXITY_MAX_SCORE,
         contextSize: Math.min(contextTokens / CONTEXT_WINDOW_TOKENS, 1),
       },
+      newTask: history ? (result.answers.new_task?.noul ?? null) : null,
       ms: Date.now() - started,
     };
   } catch (err) {

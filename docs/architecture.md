@@ -1,19 +1,19 @@
-# `claude-jev` architecture
+# `cj` architecture
 
 ```mermaid
 flowchart TB
-  user([User]) --> command["`claude-jev`\nCLI wrapper"]
+  user([User]) --> command["`cj`\nCLI wrapper"]
 
-  subgraph launcher["Launcher — bin/claude-jev.mjs"]
+  subgraph launcher["Launcher — bin/cj.mjs"]
     direction TB
-    command --> env["Load environment\nprecedence: process env → .env → ~/.claude-jev.env → ~/.claude-jev.env"]
+    command --> env["Load environment\nprecedence: process env → .env → ~/.claude-jev.env"]
     env --> find["Find `claude` executable on PATH"]
     env --> saved["Read existing ~/.claude/settings.json model\nfor later restoration"]
     find --> key{"JEV_API_KEY or\nTYPESAFE_API_KEY?"}
 
     key -- No --> direct["Spawn real Claude Code\nwithout routing"]
     key -- Yes --> proxyStart["Start ephemeral loopback proxy\n127.0.0.1:random-port"]
-    proxyStart --> launchEnv["Set ANTHROPIC_BASE_URL to proxy\nExpose `claude-jev` as Claude Jev in /model\nDefault to `claude-jev` unless user set ANTHROPIC_MODEL"]
+    proxyStart --> launchEnv["Set ANTHROPIC_BASE_URL to proxy\nExpose `cj-auto` as Claude Jev in /model\nDefault to `cj-auto` unless user set ANTHROPIC_MODEL\nDeclare the 1M window, enable MCP tool search\nSeed a 400K auto-compact window once"]
     launchEnv --> statusCfg{"Status line allowed?"}
     statusCfg -- "No: JEV_NO_STATUSLINE or user statusLine" --> spawn
     statusCfg -- Yes --> statusCfgFile["Write temporary Claude status-line settings"] --> spawn
@@ -22,7 +22,7 @@ flowchart TB
 
   spawn --> claude["Claude Code\n(native UI, login, tools, sessions, permissions)"]
   claude --> picker{"/model selection"}
-  picker -- "Claude Jev" --> auto["model: `claude-jev`\n(routing sentinel)"]
+  picker -- "Claude Jev" --> auto["model: `cj-auto`\n(routing sentinel)"]
   picker -- "Concrete model" --> manual["model: user-selected model"]
   auto --> loopback
   manual --> loopback
@@ -33,7 +33,7 @@ flowchart TB
     loopback --> head{"HEAD probe?"}
     head -- Yes --> headOK["Return 200"]
     head -- No --> parse["Parse request body\nOptionally dump body with JEV_DUMP\nNormalize legacy MCP JSON schemas"]
-    parse --> mode{"model is `claude-jev`?"}
+    parse --> mode{"model is `cj-auto`?"}
 
     mode -- No --> pass["Leave model unchanged\nFor agent requests, publish manual status"]
     mode -- Yes --> conversation["Build conversation key\nsession ID + first-message text\nKeep up to 50 independent states"]
@@ -44,7 +44,7 @@ flowchart TB
     jev --> policy
     policy --> saveTier["Pin chosen tier in conversation state"]
     saveTier --> pinned
-    pinned --> rewrite["Rewrite `claude-jev` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
+    pinned --> rewrite["Rewrite `cj-auto` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
     rewrite --> publish["Write latest tier, confidence, and reason\nto per-session temp status file"]
     pass --> forward
     publish --> forward["Forward request to api.anthropic.com\nPreserve Claude Code authorization headers\nstream upstream response unchanged"]
@@ -59,7 +59,7 @@ flowchart TB
   forward --> anthropic["Anthropic API"]
   anthropic --> claude
 
-  subgraph visibility["Routing visibility — status.mjs + claude-jev-statusline.mjs"]
+  subgraph visibility["Routing visibility — status.mjs + cj-statusline.mjs"]
     direction TB
     statusFile["Temp file: $TMPDIR/claude-jev/<session>.json"]
     statusLine["Claude Code status-line command\nReads session file and renders:\n⚡ tier + confidence, or ⏸ manual"]
@@ -69,7 +69,7 @@ flowchart TB
   pass --> statusFile
   statusLine --> claude
 
-  spawn --> exit["On process exit: close proxy\nand restore saved model only if it is still `claude-jev`"]
+  spawn --> exit["On process exit: close proxy\nand restore saved model only if it is still `cj-auto`"]
 ```
 
 The routing call happens only for the first request of a user turn. Tool-loop continuations reuse

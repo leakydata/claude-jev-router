@@ -319,7 +319,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             // What the prompt cache was built on, which is what a downgrade would discard.
             const current = state.tier ?? "opus";
             const prompt = newTurnPrompt(body);
-            const explaining = prompt?.includes("<claude-jev-explain>");
+            const explaining = prompt?.includes("<cj-explain>");
             let fresh = null;
             if (prompt && !explaining) {
               const models = claudeModels([...catalog.values()]).filter((model) =>
@@ -352,6 +352,8 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                 model,
                 confidence: jev?.confidence ?? null,
                 metrics: jev?.metrics ?? null,
+                newTask: jev?.newTask ?? null,
+                contextTokens,
                 reason,
                 jev: jev ? { request: jev.request, response: jev.response } : null,
               };
@@ -371,7 +373,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             // `claude -p` omits metadata on the first request of a session, so there is no
             // session id to file the decision under and it would be dropped. The conversation
             // key is stable for the same conversation and is already what `debug` prints, so
-            // it is the identifier a user can pass to `claude-jev-explain` for a print-mode run.
+            // it is the identifier a user can pass to `cj-explain` for a print-mode run.
             if (fresh && !explaining) {
               writeDecision(sessionOf(body) || key, { tier, ...fresh, at: Date.now() });
             }

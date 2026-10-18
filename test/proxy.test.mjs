@@ -15,14 +15,14 @@ import { jevRequest } from "../src/router.mjs";
 import { questionForModels } from "../src/config.mjs";
 
 test("only the sentinel model is routed", () => {
-  assert.equal(isAuto("claude-jev"), true);
+  assert.equal(isAuto("cj-auto"), true);
   assert.equal(isAuto("claude-opus-4-6"), false, "a model the user picked is theirs");
   assert.equal(isAuto("claude-haiku-4-5-20251001"), false, "internal Haiku calls pass through");
   assert.equal(isAuto(undefined), false);
 });
 
 test("the sentinel is not mistaken for a real tier", () => {
-  assert.equal(tierOf("claude-jev"), null);
+  assert.equal(tierOf("cj-auto"), null);
 });
 import { tierOf, isAuto, supportsModernThinking } from "../src/config.mjs";
 import { writeDecision, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
@@ -139,7 +139,7 @@ test("Claude proxy sends exact account models to Jev and routes the chosen versi
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "claude-jev",
+      model: "cj-auto",
       tools: [{ name: "Bash" }],
       messages: [{ role: "user", content: "debug this race" }],
     }),
@@ -167,7 +167,7 @@ test("a routed request without metadata is recorded under the conversation key",
 
   // Exactly what `claude -p` sends first: no metadata, so no session id.
   const body = {
-    model: "claude-jev",
+    model: "cj-auto",
     tools: [{ name: "Bash" }],
     messages: [{ role: "user", content: `rename this variable ${process.pid}` }],
   };

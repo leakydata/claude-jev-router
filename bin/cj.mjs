@@ -5,8 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startProxy } from "../src/proxy.mjs";
-import { AUTO_MODEL } from "../src/config.mjs";
-import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
+import { AUTO_MODEL, DEFAULT_COMPACT_WINDOW } from "../src/config.mjs";
+import { readSavedModel, restoreSavedModel, seedCompactWindow } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -26,10 +26,19 @@ function autoModelEnv() {
     ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Route each turn to the cheapest model that can do it",
     ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES:
       "thinking,adaptive_thinking,interleaved_thinking,effort,max_effort",
-    // Some Claude Code versions validate the model client-side before it reaches the proxy;
-    // this defers to the API so "claude-jev" can pass through for rewriting.
-    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",
   };
+  // Defaults the user can override by setting the variable themselves.
+  const defaults = {
+    // Claude Code assumes a 200K window for a model id it does not recognise. Every routed
+    // model has a 1M window, and declaring it keeps proactive and idle compaction running at
+    // the window the user chose. The sentinel must not start with "claude-" for this to apply.
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS: "1000000",
+    // Claude Code turns MCP tool search off behind a custom base URL, because most proxies
+    // drop `tool_reference` blocks. This proxy forwards them untouched, so MCP tool
+    // definitions can stay deferred instead of being re-read on every request.
+    ENABLE_TOOL_SEARCH: "true",
+  };
+  for (const [key, value] of Object.entries(defaults)) if (!process.env[key]) env[key] = value;
   // ANTHROPIC_MODEL applies to this session only and is never written to settings, so the
   // default costs the user nothing permanent. A model they set themselves still wins.
   if (!process.env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = AUTO_MODEL;
@@ -59,7 +68,7 @@ function statusLineArgs() {
   }
   // Passed as a file rather than inline JSON: on Windows the args go through a shell, and a
   // JSON string containing its own quotes does not survive that.
-  const command = `"${process.execPath}" "${join(HERE, "claude-jev-statusline.mjs")}"`;
+  const command = `"${process.execPath}" "${join(HERE, "cj-statusline.mjs")}"`;
   const file = join(tmpdir(), "claude-jev", "settings.json");
   try {
     mkdirSync(dirname(file), { recursive: true });
@@ -122,6 +131,7 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
   env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
   Object.assign(env, autoModelEnv());
+  seedCompactWindow(DEFAULT_COMPACT_WINDOW);
   process.on("exit", () => {
     close();
     restoreSavedModel(savedModelBefore);
