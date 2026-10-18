@@ -252,7 +252,11 @@ injection, and decision display.
 
 ## Limitations
 
-- The user's prompt text is sent to TypeSafe for the routing decision. Nothing else is.
+- The new prompt is sent to TypeSafe for the routing decision. For Claude Code, so a terse
+  follow-up is judged by the work it continues, so is a bounded slice of the conversation:
+  up to six earlier prompts and the compaction summary (clipped), the assistant's last reply
+  (clipped), recent tool-call counts, and the paths of files edited. File contents and tool
+  output are not sent directly, though the assistant's reply may quote them.
 - Jev adds latency only to the first request of a turn; tool-loop continuations add none.
 - Claude Code and Codex request formats are not public contracts. Use `JEV_DUMP` to diagnose
   upstream changes.

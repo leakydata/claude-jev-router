@@ -24,24 +24,33 @@ function getClient() {
 }
 
 /**
- * Asks Jev which tier fits this prompt. Returns null on any failure, which the policy
- * layer reads as "keep the current model" — routing must never block a prompt.
- *
- * @returns {Promise<?{choice: string, confidence: number, probabilities: object, metrics: object, ms: number}>}
+ * The Jev request for one routing decision. `history` is the recent conversation from
+ * `recentContext`, so a terse follow-up is judged by the work it continues.
  */
-export async function askJev({ prompt, current, contextTokens, models }) {
-  if (!models?.length) return null;
-  const started = Date.now();
-  const abort = new AbortController();
-  const deadline = setTimeout(() => abort.abort(), THRESHOLDS.jevDeadlineMs);
-  const request = {
+export function jevRequest({ prompt, current, contextTokens, models, history }) {
+  return {
     state: {
       request: prompt,
+      ...(history && { conversation_before_request: history }),
       session: { current_model: current, context_tokens: contextTokens },
       environment: { available_models: models.map((model) => model.id) },
     },
     questions: { ...QUESTIONS, model: questionForModels(models) },
   };
+}
+
+/**
+ * Asks Jev which tier fits this prompt. Returns null on any failure, which the policy
+ * layer reads as "keep the current model" — routing must never block a prompt.
+ *
+ * @returns {Promise<?{choice: string, confidence: number, probabilities: object, metrics: object, ms: number}>}
+ */
+export async function askJev({ prompt, current, contextTokens, models, history }) {
+  if (!models?.length) return null;
+  const started = Date.now();
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), THRESHOLDS.jevDeadlineMs);
+  const request = jevRequest({ prompt, current, contextTokens, models, history });
   try {
     const result = await getClient().systemOne(request, { signal: abort.signal });
     const { model: answer, task_complexity, reasoning_required, tool_complexity } = result.answers;

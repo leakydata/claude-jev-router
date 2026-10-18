@@ -9,7 +9,10 @@ import {
   conversationKey,
   sessionOf,
   startProxy,
+  recentContext,
 } from "../src/proxy.mjs";
+import { jevRequest } from "../src/router.mjs";
+import { questionForModels } from "../src/config.mjs";
 
 test("only the sentinel model is routed", () => {
   assert.equal(isAuto("jev-router"), true);
@@ -387,4 +390,73 @@ test("the same opening text in two sessions gets two keys", () => {
 test("the key survives metadata that is not JSON", () => {
   const body = { metadata: { user_id: "not-json" }, messages: [{ role: "user", content: "hi" }] };
   assert.doesNotThrow(() => conversationKey(body));
+});
+
+const said = (role, text, extra = []) => ({ role, content: [{ type: "text", text }, ...extra] });
+
+test("a follow-up carries the earlier requests, the last reply, and recent tool use to Jev", () => {
+  const ctx = recentContext({
+    messages: [
+      said("user", "<system-reminder>noise</system-reminder>the websocket server drops messages, investigate"),
+      said("assistant", "It is a race in the flush.", [
+        { type: "tool_use", id: "a", name: "Edit", input: { file_path: "src/queue.ts" } },
+        { type: "tool_use", id: "b", name: "Bash", input: { command: "npm test" } },
+      ]),
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "ok" }, { type: "tool_result", tool_use_id: "b", content: "fail", is_error: true }] },
+      said("assistant", "Tests still fail. Want me to add a per-connection lock?"),
+      said("user", "yes, go ahead"),
+    ],
+  });
+  assert.deepEqual(ctx, {
+    earlier_user_requests: ["the websocket server drops messages, investigate"],
+    last_assistant_reply: "Tests still fail. Want me to add a per-connection lock?",
+    recent_tool_use: { calls_by_tool: { Edit: 1, Bash: 1 }, files_changed: ["src/queue.ts"], failed_tool_calls: 1 },
+  });
+});
+
+test("the first prompt of a conversation has no context", () => {
+  assert.equal(recentContext({ messages: [{ role: "user", content: "hi" }] }), null);
+  assert.equal(recentContext({}), null);
+});
+
+test("a compaction summary is passed as a summary, not as a request", () => {
+  const ctx = recentContext({
+    messages: [
+      { role: "user", content: "This session is being continued from a previous conversation that ran out of context. Summary: migrating auth." },
+      said("user", "now"),
+    ],
+  });
+  assert.match(ctx.summary_of_earlier_conversation, /migrating auth/);
+  assert.deepEqual(ctx.earlier_user_requests, []);
+});
+
+test("long context is clipped, keeping both ends", () => {
+  const ctx = recentContext({
+    messages: [said("user", `START ${"x".repeat(5000)} END`), said("user", "next")],
+  });
+  const [req] = ctx.earlier_user_requests;
+  assert.ok(req.length < 2000);
+  assert.match(req, /^START/);
+  assert.match(req, /END$/);
+});
+
+test("the Jev request carries the conversation only when there is one", () => {
+  const models = [{ id: "claude-haiku-5-5", tier: "haiku" }];
+  const base = { prompt: "yes", current: "claude-opus-5-5", contextTokens: 10, models };
+  assert.equal(jevRequest(base).state.conversation_before_request, undefined);
+  const history = { earlier_user_requests: ["fix the race"] };
+  assert.deepEqual(jevRequest({ ...base, history }).state.conversation_before_request, history);
+});
+
+test("model choices carry exact-model facts and flag older versions in a tier", () => {
+  const { criteria } = questionForModels([
+    { id: "claude-haiku-5-5", tier: "haiku" },
+    { id: "claude-haiku-4-5", tier: "haiku" },
+    { id: "gpt-6-luna", tier: "haiku" },
+  ]);
+  assert.match(criteria["claude-haiku-5-5"].facts, /Haiku 5\.5/);
+  assert.equal(criteria["claude-haiku-5-5"].version, undefined);
+  assert.match(criteria["claude-haiku-4-5"].version, /claude-haiku-5-5 is newer/);
+  assert.ok(criteria["claude-haiku-5-5"].good_for.length > 1);
+  assert.equal(criteria["gpt-6-luna"].facts, undefined, "non-Claude models get tier guidance only");
 });

@@ -69,7 +69,92 @@ export function newTurnPrompt(body) {
   } else {
     return null;
   }
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim() || null;
+  return stripReminders(text);
+}
+
+const stripReminders = (text) =>
+  text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim() || null;
+
+const textBlocks = (content) =>
+  typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+      : "";
+
+/** Keeps the start and end of a long text, where the ask and the conclusion usually are. */
+const clip = (text, max) =>
+  text.length <= max ? text : `${text.slice(0, max * 0.6)} […] ${text.slice(-max * 0.4)}`;
+
+// Bounds on what `recentContext` sends. Jev accuracy drops as state fills with detail
+// unrelated to the decision, so this is the conversation's recent shape, not a transcript.
+const CONTEXT_LIMITS = {
+  priorRequests: 6,
+  requestChars: 1500,
+  replyChars: 3000,
+  summaryChars: 4000,
+  recentTurnsForTools: 3,
+  files: 15,
+};
+
+const CONTINUATION = /^This session is being continued from a previous conversation/;
+
+/**
+ * What the conversation was doing before the new prompt, for Jev. A follow-up such as
+ * "yes, go ahead" or "try again" is only as hard as the work it refers to, and the prompt
+ * alone hides that: the earlier requests, the assistant's last reply, and the recent tool
+ * activity carry it. Returns null when there is no earlier turn to describe.
+ */
+export function recentContext(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages.slice(0, -1) : [];
+  // A user message that carries typed text, not just tool results, opens a turn.
+  const turnStarts = [];
+  messages.forEach((m, i) => {
+    if (m.role !== "user") return;
+    const blocks = Array.isArray(m.content) ? m.content : [];
+    if (typeof m.content === "string" || !blocks.some((b) => b.type === "tool_result")) {
+      if (stripReminders(textBlocks(m.content))) turnStarts.push(i);
+    }
+  });
+  if (!turnStarts.length) return null;
+
+  const context = {};
+  const firstText = stripReminders(textBlocks(messages[turnStarts[0]].content)) ?? "";
+  if (CONTINUATION.test(firstText)) {
+    context.summary_of_earlier_conversation = clip(firstText, CONTEXT_LIMITS.summaryChars);
+    turnStarts.shift();
+  }
+
+  context.earlier_user_requests = turnStarts
+    .slice(-CONTEXT_LIMITS.priorRequests)
+    .map((i) => clip(stripReminders(textBlocks(messages[i].content)), CONTEXT_LIMITS.requestChars));
+
+  const reply = messages.findLast((m) => m.role === "assistant" && textBlocks(m.content).trim());
+  if (reply) context.last_assistant_reply = clip(textBlocks(reply.content).trim(), CONTEXT_LIMITS.replyChars);
+
+  const since = turnStarts.at(-CONTEXT_LIMITS.recentTurnsForTools) ?? 0;
+  const tools = {};
+  const files = new Set();
+  let failures = 0;
+  for (const m of messages.slice(since)) {
+    for (const b of Array.isArray(m.content) ? m.content : []) {
+      if (b.type === "tool_use") {
+        tools[b.name] = (tools[b.name] ?? 0) + 1;
+        const file = b.input?.file_path ?? b.input?.notebook_path;
+        if (file && /^(?:Edit|Write|MultiEdit|NotebookEdit)$/.test(b.name)) files.add(file);
+      } else if (b.type === "tool_result" && b.is_error) {
+        failures++;
+      }
+    }
+  }
+  if (Object.keys(tools).length) {
+    context.recent_tool_use = {
+      calls_by_tool: tools,
+      ...(files.size && { files_changed: [...files].slice(-CONTEXT_LIMITS.files) }),
+      failed_tool_calls: failures,
+    };
+  }
+  return context.earlier_user_requests.length || context.summary_of_earlier_conversation ? context : null;
 }
 
 /**
@@ -231,7 +316,8 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               const available = [...new Set(models.map((model) => model.tier))];
               const currentModel = state.model ?? modelForTier(models, current);
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
-              const jev = await route({ prompt, current: currentModel, contextTokens, models });
+              const history = recentContext(body);
+              const jev = await route({ prompt, current: currentModel, contextTokens, models, history });
               const chosen = models.find((model) => model.id === jev?.choice);
               const tierAnswer = jev && { ...jev, choice: chosen?.tier };
               const { tier, reason } = decide({
