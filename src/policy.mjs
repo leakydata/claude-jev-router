@@ -48,6 +48,10 @@ export function decide({ prompt, jev, current, available, contextTokens = 0 }) {
 
   let target = jev.choice;
 
+  if (rankOf(target) < rankOf(current) && jev.confidence < THRESHOLDS.minDowngradeConfidence) {
+    return settle(current, "low-confidence-no-downgrade");
+  }
+
   if (jev.confidence < THRESHOLDS.minConfidence) {
     if (rankOf(target) < rankOf(current)) return settle(current, "low-confidence-no-downgrade");
     const ceiling = Math.max(rankOf(current), rankOf(THRESHOLDS.uncertainCeiling));

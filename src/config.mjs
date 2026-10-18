@@ -69,6 +69,12 @@ export const availableTiers = () =>
 export const THRESHOLDS = {
   /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */
   minConfidence: 0.3,
+  /**
+   * A downgrade is where routing risks quality, so it needs more certainty than other moves.
+   * On the labelled scenarios every correct downgrade came in at 0.70 or above, and the two
+   * wrong ones, both under-routes, at 0.28 and 0.33.
+   */
+  minDowngradeConfidence: 0.5,
   /** Safest tier to land on when Jev is unsure. */
   uncertainCeiling: "sonnet",
   /**

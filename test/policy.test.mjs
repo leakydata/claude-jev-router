@@ -88,3 +88,11 @@ test("accepts exact model changes within the same tier", () => {
   assert.equal(shouldUseExactModel("jev/no-change", "opus", "opus"), true);
   assert.equal(shouldUseExactModel("low-confidence-no-downgrade/no-change", "opus", "opus"), false);
 });
+
+test("a downgrade needs more confidence than other moves", () => {
+  const at = (confidence) => decide({ ...base, current: "opus", jev: { choice: "haiku", confidence } });
+  assert.deepEqual(at(0.4), { tier: "opus", reason: "low-confidence-no-downgrade/no-change", changed: false });
+  assert.equal(at(0.7).tier, "haiku");
+  const upgrade = decide({ ...base, current: "haiku", jev: { choice: "sonnet", confidence: 0.4 } });
+  assert.equal(upgrade.tier, "sonnet", "an upgrade at the same confidence still goes through");
+});
