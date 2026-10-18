@@ -45,7 +45,7 @@ flowchart TB
     policy --> saveTier["Pin chosen tier in conversation state"]
     saveTier --> pinned
     pinned --> rewrite["Rewrite `cj-auto` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
-    rewrite --> publish["Write latest tier, confidence, and reason\nto per-session temp status file"]
+    rewrite --> publish["Write latest tier, P(enough), and reason\nto per-session temp status file"]
     pass --> forward
     publish --> forward["Forward request to api.anthropic.com\nPreserve Claude Code authorization headers\nstream upstream response unchanged"]
   end
@@ -53,7 +53,7 @@ flowchart TB
   subgraph routing["Routing — src/router.mjs + src/policy.mjs"]
     direction TB
     jev["TypeSafe / Jev systemOne call\nSends only fresh user prompt plus:\ncurrent tier, approximate context, available tiers"]
-    policy["Policy resolves final tier\n• prompt override wins\n• failure / malformed answer: keep current\n• low confidence: no downgrade; upgrades capped at sonnet\n• large context: no downgrade that rebuilds cache\n• unavailable tier: choose nearest stronger available\n• fable requires JEV_ALLOW_FABLE=1"]
+    policy["Policy resolves final tier\n• prompt override wins\n• failure / malformed answer: keep current\n• cheapest tier with P(enough) ≥ 0.7 (Haiku 0.85)\n• cheaper model only if the cache rebuild pays back\n• unavailable tier: choose nearest stronger available\n• fable requires JEV_ALLOW_FABLE=1"]
   end
 
   forward --> anthropic["Anthropic API"]
@@ -62,7 +62,7 @@ flowchart TB
   subgraph visibility["Routing visibility — status.mjs + cj-statusline.mjs"]
     direction TB
     statusFile["Temp file: $TMPDIR/claude-jev/<session>.json"]
-    statusLine["Claude Code status-line command\nReads session file and renders:\n⚡ tier + confidence, or ⏸ manual"]
+    statusLine["Claude Code status-line command\nReads session file and renders:\n⚡ tier + P(enough), or ⏸ manual"]
     statusFile --> statusLine
   end
   publish --> statusFile

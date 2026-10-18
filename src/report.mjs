@@ -8,7 +8,7 @@ import { costOf } from "./pricing.mjs";
 
 export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const CACHE_FILE = join(homedir(), ".cache", "claude-jev", "report.json");
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 /** Transcript files modified since `since` (ms), main sessions and sub-agents alike. */
 export function transcriptFiles(root = PROJECTS_DIR, since = 0) {
@@ -69,12 +69,23 @@ async function scanFile(path, entry) {
     if (e.type !== "assistant" || !m?.usage) return;
     // One response is written as several entries that repeat its usage, sometimes with tool
     // results between them, so remember the last few ids rather than just the previous one.
+    // Sub-agent transcripts can write the first entry mid-stream, with the output count so
+    // far, so a later entry with more output adds the difference.
     const id = m.id ?? e.requestId;
-    if (id && entry.recent.includes(id)) return;
-    if (id) entry.recent = [...entry.recent.slice(-31), id];
     const cost = costOf(m.model, m.usage);
     if (!cost) return;
     const b = (d.models[m.model] ??= bucket());
+    const seen = id ? entry.recent.find((r) => r[0] === id) : null;
+    if (seen) {
+      const more = cost.tokens.output - seen[1];
+      if (more > 0) {
+        b.tokens.output += more;
+        b.dollars.output += (cost.dollars.output * more) / cost.tokens.output;
+        seen[1] = cost.tokens.output;
+      }
+      return;
+    }
+    if (id) entry.recent = [...entry.recent.slice(-31), [id, cost.tokens.output]];
     b.requests++;
     for (const k of COMPONENTS) {
       b.dollars[k] += cost.dollars[k];

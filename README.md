@@ -79,6 +79,7 @@ The bundled `/cj-explain` skill shows the factors behind the last routing decisi
 │ Selected model: CLAUDE-SONNET-5-5       │
 │                                         │
 │ Confidence: 94%                         │
+│ Selected model enough: 97%              │
 │ Decision: Jev recommendation            │
 └─────────────────────────────────────────┘
 ```
@@ -129,8 +130,9 @@ through unchanged.
 ## Token savings
 
 Every request re-reads the whole conversation from the prompt cache, so in long sessions the
-size of the context, not the choice of model, decides the bill. Measured over two weeks of real
-sessions, cache reads were 72% of the cost and output 6.5%. `cj` acts on that:
+size of the context decides most of the bill, and the model sets its price: Sonnet 5.5 reads
+the cache for half what Opus 5.5 charges, and Haiku 5.5 for a twentieth. Measured over two weeks of real
+sessions, cache reads were 61% of the cost, cache writes 30% and output 9%. `cj` acts on that:
 
 - **MCP tool search stays on.** Claude Code turns tool search off behind a custom
   `ANTHROPIC_BASE_URL`; `cj` sets `ENABLE_TOOL_SEARCH=true`, so MCP tool definitions load on
@@ -141,10 +143,11 @@ sessions, cache reads were 72% of the cost and output 6.5%. `cj` acts on that:
   seeds an auto-compact window of 400K the first time it starts. Replaying two weeks of
   sessions, Claude Code's own ~967K threshold saved 1%, 600K saved 30%, 400K saved 43%, and
   lower windows added many more compactions for little more.
-- **The model is picked per turn** by Jev, using the conversation so far. A downgrade needs
-  more confidence (0.5) than other moves, because that is where routing risks quality.
+- **The model is picked per turn** by Jev, using the conversation so far: the cheapest model
+  that is probably enough, with a higher bar for Haiku (see Routing policy). On 164 real turns
+  graded by Opus, only 18% needed Opus, so most work now runs on Sonnet 5.5.
 - **Sub-agents are routed too.** A sub-agent that asks for a concrete model (Explore asks for
-  Opus) is routed by Jev with that model as a ceiling: down, never up. Sub-agents were 43% of
+  Opus) is routed by Jev with that model as a ceiling: down, never up. Sub-agents were 44% of
   two weeks' spend. Picking a model yourself with `/model` pauses routing for that session's
   sub-agents as well.
 - **Delegation hint.** A prompt hook asks Jev whether a request is bulky, self-contained
@@ -180,6 +183,25 @@ plain `claude` sessions too: totals, cache-hit rate, sub-agent share, compaction
 breakdown by component, model and day. `cj-report 30` covers 30 days. The first run reads every
 transcript; later runs read only what was appended and take a fraction of a second.
 
+### Checking quality
+
+`cj-quality` measures whether routing costs quality, from real turns in Claude Code's
+transcripts. Results stay under `~/.cache/claude-jev`, never in the repository.
+
+- `cj-quality scan [days]` has Jev read the prompt that followed each turn for signs the turn
+  fell short: a correction, "that's wrong", or the same request again. It reports the rate by
+  the model that served the turn. It costs a fraction of a cent per turn.
+- `cj-quality judge [count] [days]` has Opus 5.5 read sampled turns, including what the
+  assistant actually did and the user's next message. For each turn it names the cheapest
+  model that would have done it right in one pass, and says whether the turn as served went
+  well. It runs `claude -p` on your own login with no tools, MCP servers or hooks, so it
+  cannot act on the machine; a turn costs about 3 cents at list prices. Its labels become
+  part of `npm run eval`.
+
+Turns served by cheaper models are judged first, because that is where routing can cost
+quality; the rest come from turns served by Opus, where routing may have spent more than it
+needed to.
+
 ## Routing policy
 
 One Jev call per fresh user turn picks an exact model from the account's catalog. Jev sees the
@@ -197,8 +219,13 @@ new prompt, a bounded slice of the conversation before it, and per-model guidanc
 
 - explicit requests such as `use opus`, `use haiku`, or `use strong` win;
 - failure, timeout, or an unrecognised Jev answer keeps the current model;
-- low confidence never downgrades and caps upgrades at the balanced tier;
-- large conversations refuse downgrades that would waste more prompt-cache work than they save;
+- Jev's answer is read as a probability that each tier is the cheapest one able to do the
+  work, and routing takes the cheapest tier whose probability of being enough (its share plus
+  every cheaper tier's) reaches 0.7, or 0.85 for Haiku;
+- a move to a cheaper model mid-conversation must recover the cost of rebuilding its prompt
+  cache within about 20 requests, priced from the conversation's real prompt size and what
+  each model still holds cached: a new conversation, an expired cache, or a return to a model
+  whose cache is still warm moves freely, and a long warm Opus conversation stays on Opus;
 - unavailable tiers step upward rather than silently choosing a weaker model;
 - the long tier is disabled unless `JEV_ALLOW_FABLE=1`.
 
@@ -221,7 +248,7 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 Existing environment variables have highest precedence, followed by `.env` in the launch
 directory, then `~/.claude-jev.env`.
 
-Tier definitions, model facts, Jev's questions, confidence thresholds, and timeouts live in
+Tier definitions, model facts, Jev's questions, routing thresholds, and timeouts live in
 `src/config.mjs`. Jev chooses among the exact models in the signed-in account's catalog, so
 model versions such as `claude-opus-5` and `claude-opus-5-5` remain separate choices. Static
 model ids are used only until Claude Code fetches its catalog. When a new model generation
@@ -252,12 +279,17 @@ native model-picker injection, and decision display.
 ### Routing quality
 
 `npm run eval` scores live routing, after the policy, against labelled scenarios, and reports
-misses as under-routed (a weaker model than needed: a quality risk, and a failing exit code)
-or over-routed (a cost). The repository's scenarios are synthetic. To add your own prompts,
-`npm run eval:harvest` samples real ones with their conversation into
-`~/.cache/claude-jev/eval/unlabelled.jsonl`, outside the repository; fill in each `tier` and
-save the file as `labelled.jsonl` beside it. Run the eval before and after changing guidance
-or thresholds in `src/config.mjs`.
+misses as under-routed (a weaker model than needed: a quality risk) or over-routed (a cost).
+It fails when a synthetic scenario is routed down to Haiku when it needed more. It then scores the same Jev answers under other policies, such as
+other `enoughProbability` values, Jev's top choice, or always Sonnet, with a relative cost for
+each, so a threshold change can be judged before it is made. `-- --rescore` re-scores the
+last run's saved answers without calling Jev, and `-- --set synthetic|real` picks a set.
+
+The repository's scenarios are synthetic. Real ones come from `cj-quality judge`, which writes
+`~/.cache/claude-jev/eval/judged.jsonl`, and from your own labels: `npm run eval:harvest`
+samples real prompts into `unlabelled.jsonl` beside it; fill in each `tier` and save the file
+as `labelled.jsonl`. Your labels win over the judge's for the same prompt. Run the eval before
+and after changing guidance or thresholds in `src/config.mjs`.
 
 ## Limitations
 

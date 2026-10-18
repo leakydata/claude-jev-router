@@ -1,4 +1,5 @@
-import { TIER_NAMES, THRESHOLDS, OVERRIDE_PATTERNS, rankOf } from "./config.mjs";
+import { TIER_NAMES, THRESHOLDS, OVERRIDE_PATTERNS, idOf, rankOf } from "./config.mjs";
+import { ratesFor } from "./pricing.mjs";
 
 /** The tier the user named explicitly in the prompt, or null. */
 export function detectOverride(prompt) {
@@ -23,18 +24,86 @@ function clampToAvailable(tier, available) {
 }
 
 /**
+ * Whether moving a conversation from tier `from` to the cheaper tier `to` pays for itself.
+ * The first request on `to` writes whatever `to` does not already hold in its prompt cache,
+ * where staying would mostly have read `from`'s cache; every later request then reads,
+ * writes and generates at `to`'s lower prices. The move pays when the extra cost of that
+ * first request is recovered within `switchHorizonRequests` requests.
+ *
+ * `cache.promptTokens` is the conversation's prompt size and `cache.warm[tier]` how much of
+ * it each tier still holds cached. Without `cache`, `from` is assumed warm for the whole
+ * `contextTokens` and `to` cold.
+ */
+export function switchPays(from, to, { contextTokens = 0, cache } = {}) {
+  const size = cache?.promptTokens ?? contextTokens;
+  const rf = ratesFor(idOf(from), size);
+  const rt = ratesFor(idOf(to), size);
+  if (!rf || !rt) return true;
+  const warmFrom = Math.min(size, cache ? (cache.warm?.[from] ?? 0) : size);
+  const warmTo = Math.min(size, cache?.warm?.[to] ?? 0);
+  const first = (r, warm) => (size - warm) * r.write + warm * r.read;
+  const extra = first(rt, warmTo) - first(rf, warmFrom);
+  const perRequest =
+    size * (rf.read - rt.read) +
+    THRESHOLDS.typicalWriteTokens * (rf.write - rt.write) +
+    THRESHOLDS.typicalOutputTokens * (rf.output - rt.output);
+  return extra <= THRESHOLDS.switchHorizonRequests * perRequest;
+}
+
+/**
+ * Jev's answer as a probability per tier that the tier is the cheapest one able to do the
+ * work. An answer carrying only a choice and a confidence puts the confidence on the choice
+ * and the rest on the more capable of the choice and the current tier, so doubt never moves
+ * work to a weaker model.
+ */
+function tierProbabilities(jev, current) {
+  const given = jev.tierProbabilities;
+  if (given && Object.values(given).some((p) => p > 0)) return given;
+  const confidence = jev.confidence ?? 0;
+  const safer = rankOf(current) > rankOf(jev.choice) ? current : jev.choice;
+  return { [jev.choice]: confidence, [safer]: (safer === jev.choice ? confidence : 0) + 1 - confidence };
+}
+
+/** Jev's probability that `tier` is enough: its own and every cheaper tier's share. */
+function enoughAt(jev, current, tier) {
+  const p = tierProbabilities(jev, current);
+  return Math.min(1, TIER_NAMES.slice(0, rankOf(tier) + 1).reduce((sum, t) => sum + (p[t] ?? 0), 0));
+}
+
+/**
+ * The cheapest tier Jev thinks is probably enough. Jev's choice question asks for the
+ * cheapest model that can do the work, so the probability that a tier is enough is the sum
+ * over it and every cheaper tier. Taking the cheapest tier where that sum reaches
+ * `enoughProbability` (higher for Haiku) uses Jev's whole answer: a split between Haiku and Opus lands on Opus,
+ * where the top choice alone would have said Haiku.
+ */
+function cheapestEnough(jev, current) {
+  const p = tierProbabilities(jev, current);
+  let sum = 0;
+  for (const tier of TIER_NAMES) {
+    sum += p[tier] ?? 0;
+    const bar = tier === "haiku" ? THRESHOLDS.haikuEnoughProbability : THRESHOLDS.enoughProbability;
+    if (sum >= bar - 1e-9) return tier;
+  }
+  return jev.choice;
+}
+
+/**
  * Turns a Jev answer into the model we will actually run. Pure and total: any missing,
  * malformed, or unavailable input falls back to the model already in use.
  *
  * @param {object} input
  * @param {string} input.prompt        raw user prompt, for explicit-override detection
- * @param {?{choice: string, confidence: number}} input.jev  null when Jev failed
- * @param {string} input.current       tier currently active in the session
+ * @param {?{choice: string, confidence: number, tierProbabilities?: object}} input.jev
+ *                                     null when Jev failed
+ * @param {string} input.current       tier currently active in the conversation
  * @param {string[]} input.available   tier names the account can run
  * @param {number} input.contextTokens approximate size of the conversation so far
- * @returns {{tier: string, reason: string, changed: boolean}}
+ * @param {object} [input.cache]       prompt size and per-tier cache state; see `switchPays`
+ * @returns {{tier: string, reason: string, changed: boolean, enough?: number}} `enough` is
+ *   Jev's probability that the tier routed to is enough, when Jev answered
  */
-export function decide({ prompt, jev, current, available, contextTokens = 0 }) {
+export function decide({ prompt, jev, current, available, contextTokens = 0, cache }) {
   const settle = (tier, reason) => {
     const final = clampToAvailable(tier, available) ?? current;
     const why = final === tier ? reason : `${reason}+unavailable`;
@@ -46,21 +115,10 @@ export function decide({ prompt, jev, current, available, contextTokens = 0 }) {
 
   if (!jev || !TIER_NAMES.includes(jev.choice)) return settle(current, "jev-unavailable");
 
-  let target = jev.choice;
-
-  if (rankOf(target) < rankOf(current) && jev.confidence < THRESHOLDS.minDowngradeConfidence) {
-    return settle(current, "low-confidence-no-downgrade");
-  }
-
-  if (jev.confidence < THRESHOLDS.minConfidence) {
-    if (rankOf(target) < rankOf(current)) return settle(current, "low-confidence-no-downgrade");
-    const ceiling = Math.max(rankOf(current), rankOf(THRESHOLDS.uncertainCeiling));
-    if (rankOf(target) > ceiling) return settle(TIER_NAMES[ceiling], "low-confidence-capped");
-  }
-
-  if (rankOf(target) < rankOf(current) && contextTokens > THRESHOLDS.downgradeMaxContextTokens) {
-    return settle(current, "downgrade-not-worth-cache-rebuild");
-  }
-
-  return settle(target, "jev");
+  const target = cheapestEnough(jev, current);
+  const out =
+    rankOf(target) < rankOf(current) && !switchPays(current, target, { contextTokens, cache })
+      ? settle(current, "downgrade-not-worth-cache-rebuild")
+      : settle(target, "jev");
+  return { ...out, enough: enoughAt(jev, current, out.tier) };
 }

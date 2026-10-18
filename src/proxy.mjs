@@ -400,13 +400,19 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         subagent: !isMain,
       });
       const chosen = candidates.find((model) => model.id === jev?.choice);
-      const tierAnswer = jev && { ...jev, choice: chosen?.tier };
-      let { tier, reason } = decide({
+      const tierProbabilities = {};
+      for (const [id, p] of Object.entries(jev?.probabilities ?? {})) {
+        const t = candidates.find((model) => model.id === id)?.tier;
+        if (t) tierProbabilities[t] = (tierProbabilities[t] ?? 0) + p;
+      }
+      const tierAnswer = jev && { ...jev, choice: chosen?.tier, tierProbabilities };
+      let { tier, reason, enough } = decide({
         prompt,
         jev: tierAnswer,
         current,
         available,
         contextTokens,
+        cache: cacheState(state, contextTokens),
       });
       if (ceilingTier && rankOf(tier) > rankOf(ceilingTier)) {
         tier = ceilingTier;
@@ -427,6 +433,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         model,
         requested: ceiling ?? null,
         confidence: jev?.confidence ?? null,
+        enough: enough ?? null,
         metrics: jev?.metrics ?? null,
         newTask: jev?.newTask ?? null,
         contextTokens,
@@ -455,6 +462,29 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     }
   }
 
+  /**
+   * Remembers, per conversation, the prompt size of its latest response and how much of it
+   * each tier holds in its prompt cache, which is what a model switch would have to rebuild.
+   */
+  function noteCache(key, model, usage) {
+    const tier = tierOf(model);
+    if (!key || !tier) return;
+    const state = stateFor(key);
+    const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    state.promptTokens = cached + (usage.input_tokens ?? 0);
+    // Claude Code asks for the 1-hour cache lifetime; a response written with the 5-minute
+    // one says so in its usage.
+    const ttl = usage.cache_creation?.ephemeral_5m_input_tokens > 0 ? 5 * 60000 : 60 * 60000;
+    state.warm = { ...state.warm, [tier]: { tokens: cached, until: Date.now() + ttl } };
+  }
+
+  /** The cache state `decide` prices a model switch with. */
+  function cacheState(state, contextTokens) {
+    const warm = {};
+    for (const [tier, w] of Object.entries(state.warm ?? {})) if (w.until > Date.now()) warm[tier] = w.tokens;
+    return { promptTokens: Math.max(state.promptTokens ?? 0, contextTokens), warm };
+  }
+
   /** Adds one response's usage to its session's totals and publishes them. */
   function recordUsage(sessionKey, model, usage) {
     const cost = costOf(model, usage);
@@ -478,6 +508,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     req.on("end", async () => {
       let out = Buffer.concat(chunks);
       let usageKey = null;
+      let convoKey = null;
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -502,6 +533,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           }
           const isMain = !session || mains.get(session) === key;
           usageKey = session || key;
+          convoKey = key;
 
           if (isAuto(body.model)) {
             if (isMain) manual.delete(session);
@@ -569,7 +601,10 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           }
           res.writeHead(up.statusCode, up.headers);
           if (usageKey && up.statusCode === 200 && /^\/v1\/messages(?:\?|$)/.test(req.url ?? "")) {
-            readResponseUsage(up, (model, usage) => recordUsage(usageKey, model, usage));
+            readResponseUsage(up, (model, usage) => {
+              recordUsage(usageKey, model, usage);
+              noteCache(convoKey, model, usage);
+            });
           }
           // Report the model the API itself says it used, so the routing can be confirmed
           // from the wire rather than trusted from our own decision log. Claude Code's UI

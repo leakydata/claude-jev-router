@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decide, detectOverride } from "../src/policy.mjs";
+import { decide, detectOverride, switchPays } from "../src/policy.mjs";
 import { QUESTIONS, shouldUseExactModel } from "../src/config.mjs";
 
 const ALL = ["haiku", "sonnet", "opus", "fable"];
@@ -16,11 +16,11 @@ test("score rubrics contain only API-valid descriptions", () => {
 });
 
 test("follows a confident Jev answer", () => {
-  assert.deepEqual(decide({ ...base, jev: sure("opus") }), {
-    tier: "opus",
-    reason: "jev",
-    changed: true,
-  });
+  const out = decide({ ...base, jev: sure("opus") });
+  assert.equal(out.tier, "opus");
+  assert.equal(out.reason, "jev");
+  assert.equal(out.changed, true);
+  assert.ok(out.enough >= 0.95);
 });
 
 test("an explicit user override beats Jev", () => {
@@ -47,27 +47,12 @@ test("ignores a tier name Jev invented", () => {
   assert.equal(decide({ ...base, jev: sure("gpt-9") }).tier, "sonnet");
 });
 
-test("never downgrades on a low-confidence answer", () => {
-  const out = decide({ ...base, jev: unsure("haiku") });
-  assert.equal(out.tier, "sonnet");
-  assert.match(out.reason, /low-confidence-no-downgrade/);
-});
 
-test("caps a low-confidence upgrade at the safe ceiling", () => {
-  const out = decide({ ...base, current: "haiku", jev: unsure("fable") });
-  assert.equal(out.tier, "sonnet");
-  assert.equal(out.reason, "low-confidence-capped");
-});
 
 test("still allows a confident upgrade to fable", () => {
   assert.equal(decide({ ...base, jev: sure("fable") }).tier, "fable");
 });
 
-test("refuses a downgrade once the cache rebuild costs more than it saves", () => {
-  const out = decide({ ...base, current: "opus", jev: sure("haiku"), contextTokens: 80000 });
-  assert.equal(out.tier, "opus");
-  assert.match(out.reason, /cache-rebuild/);
-});
 
 test("allows the same downgrade early in a conversation", () => {
   assert.equal(decide({ ...base, current: "opus", jev: sure("haiku") }).tier, "haiku");
@@ -89,10 +74,35 @@ test("accepts exact model changes within the same tier", () => {
   assert.equal(shouldUseExactModel("low-confidence-no-downgrade/no-change", "opus", "opus"), false);
 });
 
-test("a downgrade needs more confidence than other moves", () => {
-  const at = (confidence) => decide({ ...base, current: "opus", jev: { choice: "haiku", confidence } });
-  assert.deepEqual(at(0.4), { tier: "opus", reason: "low-confidence-no-downgrade/no-change", changed: false });
-  assert.equal(at(0.7).tier, "haiku");
-  const upgrade = decide({ ...base, current: "haiku", jev: { choice: "sonnet", confidence: 0.4 } });
-  assert.equal(upgrade.tier, "sonnet", "an upgrade at the same confidence still goes through");
+
+const split = (haiku, sonnet, opus) => ({ choice: "haiku", confidence: 0.4, tierProbabilities: { haiku, sonnet, opus } });
+
+test("picks the cheapest tier that is probably enough, not Jev's top choice", () => {
+  // Haiku is the single likeliest answer, but Sonnet or cheaper is only 64% likely to do it.
+  assert.equal(decide({ ...base, current: "opus", jev: split(0.5, 0.14, 0.36) }).tier, "opus");
+  assert.equal(decide({ ...base, current: "opus", jev: split(0.52, 0.47, 0.01) }).tier, "sonnet");
+  assert.equal(decide({ ...base, current: "opus", jev: split(0.9, 0.08, 0.02) }).tier, "haiku");
+});
+
+test("without probabilities, doubt keeps the more capable model", () => {
+  const down = decide({ ...base, current: "opus", jev: { choice: "haiku", confidence: 0.4 } });
+  assert.equal(down.tier, "opus");
+  const up = decide({ ...base, current: "haiku", jev: { choice: "opus", confidence: 0.4 } });
+  assert.equal(up.tier, "opus", "an unsure upgrade still goes up");
+});
+
+test("refuses a downgrade once rebuilding the cache costs more than it saves", () => {
+  const at = (promptTokens, warm) =>
+    decide({ ...base, current: "opus", jev: split(0.05, 0.9, 0.05), cache: { promptTokens, warm } });
+  assert.equal(at(500000, { opus: 500000 }).tier, "opus");
+  assert.match(at(500000, { opus: 500000 }).reason, /cache-rebuild/);
+  assert.equal(at(60000, { opus: 60000 }).tier, "sonnet", "a small conversation is cheap to move");
+  assert.equal(at(500000, {}).tier, "sonnet", "an expired cache is rebuilt either way");
+  assert.equal(at(500000, { opus: 500000, sonnet: 480000 }).tier, "sonnet", "going back to a warm cache is cheap");
+});
+
+test("moving a long conversation to Haiku pays sooner than to Sonnet", () => {
+  const big = { cache: { promptTokens: 400000, warm: { opus: 400000 } } };
+  assert.equal(switchPays("opus", "haiku", big), true);
+  assert.equal(switchPays("opus", "sonnet", big), false);
 });

@@ -32,7 +32,10 @@ if (status?.manual) {
   routed = `${DIM}⏸ manual${RESET} ${input.model?.display_name ?? ""}`.trimEnd();
 } else if (status) {
   const color = COLOR[status.tier] ?? "";
-  const p = status.confidence != null ? ` ${DIM}(p=${status.confidence.toFixed(2)})${RESET}` : "";
+  // The probability that the routed model is enough, from Jev's answer; older status files
+  // carry only Jev's confidence in its top choice.
+  const shown = status.enough ?? status.confidence;
+  const p = shown != null ? ` ${DIM}(p=${shown.toFixed(2)})${RESET}` : "";
   // Only name the reason when routing declined to do the obvious thing, so the common case
   // stays short and the interesting case explains itself.
   const held =

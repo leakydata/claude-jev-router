@@ -67,22 +67,24 @@ export const availableTiers = () =>
   TIER_NAMES.filter((n) => n !== "fable" || process.env.JEV_ALLOW_FABLE === "1");
 
 export const THRESHOLDS = {
-  /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */
-  minConfidence: 0.3,
   /**
-   * A downgrade is where routing risks quality, so it needs more certainty than other moves.
-   * On the labelled scenarios every correct downgrade came in at 0.70 or above, and the two
-   * wrong ones, both under-routes, at 0.28 and 0.33.
+   * Routing picks the cheapest tier whose probability of being enough, by Jev's answer,
+   * reaches this. Haiku has a higher bar because a Haiku miss costs the most quality, where
+   * Sonnet doing work Opus would have done better costs little. Scored on 183 labelled
+   * cases, 164 of them real turns graded by Opus (`npm run eval` prints the alternatives):
+   * these two values cut misses to a weaker model from 66 to 31, only 5 of them to Haiku,
+   * at about half the list price of running everything on Opus.
    */
-  minDowngradeConfidence: 0.5,
-  /** Safest tier to land on when Jev is unsure. */
-  uncertainCeiling: "sonnet",
+  enoughProbability: 0.7,
+  haikuEnoughProbability: 0.85,
   /**
-   * Switching models invalidates the prompt cache; the next turn re-sends the whole
-   * conversation. Measured at ~23.6k cache-creation tokens switching into Opus, so a
-   * downgrade only pays off while the conversation is still small.
+   * A move to a cheaper model must recover the cost of rebuilding the prompt cache on it
+   * within this many requests, about two turns of agentic work. Typical per-request cache
+   * writes and output, from two weeks of transcripts, price the saving per request.
    */
-  downgradeMaxContextTokens: 20000,
+  switchHorizonRequests: 20,
+  typicalWriteTokens: 5000,
+  typicalOutputTokens: 400,
   /**
    * Per-attempt Jev HTTP timeout and the hard wall-clock deadline for the whole routing
    * call. Measured: ~300-350ms warm, ~900-1000ms on the first call (TLS handshake), so the
@@ -147,7 +149,7 @@ export const OVERRIDE_PATTERNS = TIERS.map((t) => ({
 
 // The work a request implies often lives in the conversation, not the prompt text.
 const JUDGE_THE_WORK =
-  "Judge the work the `request` will cause. When `conversation_before_request` is present, a short follow-up such as \"yes\", \"go ahead\", \"continue\" or \"try again\" carries the difficulty of the work it refers to.";
+  "Judge the work the `request` will cause. When `conversation_before_request` is present, a short follow-up such as \"yes\", \"go ahead\", \"B\", \"continue\" or \"try again\" carries the difficulty of the work it refers to. A request that is a `<task-notification>` reports that a background task or sub-agent finished; the turn usually acts on its result, so judge the work that result leads to in the conversation, not the notification text.";
 
 export const QUESTIONS = {
   task_complexity: score(
@@ -206,46 +208,47 @@ export const DELEGATE_QUESTION = noul(
  */
 const GUIDANCE = {
   haiku: {
-    what: "Mechanical, factual, or fully specified work, where the answer or the exact change is already clear.",
+    what: "Work that needs no real thinking or combining of information: the answer or the exact change is already clear, and doing it is a lookup, one command, or a mechanical edit.",
     cost: "The cheapest tier, by a wide margin.",
     good_for: [
-      "Answer a question about code, output, or files already shown in the conversation",
-      "Run one obvious command (git status, the test suite, a build) and report the result",
-      "Rename, reformat, add comments or docstrings, fix a typo, update a version number",
-      "Make one small edit whose exact change the user spelled out",
-      "Find where something is defined or used, list files, read a file and summarise it",
-      "Write a commit message, stage and commit finished work, small config or text edits",
+      "Answer a question from code, output, or files already shown in the conversation",
+      "Run one obvious command (git status, the test suite, a build, a service status check) and report the result",
+      "Acknowledge a finished background task or sub-agent when nothing more needs doing than reporting it",
+      "Find where something is defined or used, list files, read one file or page and summarise it",
+      "Rename, reformat, fix a typo, update a version number, or make one edit the user spelled out exactly",
+      "Write a commit message, stage and commit finished work, answer a simple factual question",
     ],
     not_for:
-      "Choosing between designs, a bug whose cause is not yet known, changes that must stay consistent across several files, or anything security-sensitive.",
+      "Anything that needs several pieces of information combined, a choice between options, new logic written, a problem diagnosed, or several steps that depend on each other's results.",
   },
   sonnet: {
-    what: "Ordinary day-to-day engineering with a clear, bounded shape.",
-    cost: "Mid-priced: well above the cheapest tier, below the strong tier.",
+    what: "Most everyday engineering and system work. Claude Sonnet 5.5 is close to Opus 5.5 on most coding and agentic work, so it is the default for real work.",
+    cost: "About half the strong tier's price on every kind of token.",
     good_for: [
-      "Implement a feature, function, flag, or endpoint whose behaviour is specified",
-      "Write or extend tests for existing behaviour",
-      "Fix a bug whose cause is known or is local to one function or file",
-      "Repeat an established pattern across several files, or follow an agreed plan step by step",
-      "Refactor within one module, explain how code works, review a small diff",
-      "Routine framework, API, CRUD, scripting, build, and shell work with clear steps",
+      "Implement a feature, flag, endpoint, screen, or script whose behaviour is clear",
+      "Fix a bug from a visible error message, failing test, log line, or stack trace",
+      "Multi-file changes that follow a pattern or a plan already agreed in the conversation",
+      "Write or extend tests, refactor, explain how code works, review a diff",
+      "Build, packaging, deployment, configuration, and Linux administration with clear steps: install, configure, restart, fix a package with a clear error",
+      "Research: read several files, docs, or web pages and combine them into an answer or a write-up",
+      "Carry on with work the conversation is in the middle of, including acting on a finished sub-agent's result",
     ],
     not_for:
-      "Diagnosing a failure whose cause is unknown, architecture decisions, concurrency, security or auth, data migrations, or work where an earlier attempt in this conversation already failed.",
+      "A failure whose cause is unknown and spans components or the system, subtle concurrency, security, or data-loss risk, architecture with many interacting constraints, long open-ended autonomous work, or a retry after an earlier attempt failed.",
   },
   opus: {
-    what: "Hard reasoning, ambiguity, or high blast radius.",
-    cost: "Expensive: above the mid tier.",
+    what: "Only work where the mid tier would likely fall short: deep diagnosis, high-stakes correctness, or long open-ended autonomy.",
+    cost: "About twice the mid tier's price on every kind of token.",
     good_for: [
-      "Diagnose a failure whose cause is not known: intermittent, cross-component, environment or system level",
-      "Design or change an architecture, data model, or interface used across modules",
+      "Diagnose a failure whose cause is not known and spans components: intermittent, hardware, driver, kernel, network, or distributed",
       "Security, authentication, authorisation, permissions, cryptography, or payments",
       "Concurrency, race conditions, ordering, locking, or distributed-state bugs",
-      "Database or schema migrations, data backfills, anything that risks data loss",
-      "Performance investigations, large or risky refactors, reviewing a substantial change for correctness",
-      "Planning work with ambiguous requirements, or a retry after an earlier attempt failed",
+      "Database or schema migrations, data backfills, anything that risks losing data",
+      "Design an architecture, data model, or interface used across modules or systems",
+      "Long open-ended autonomous work: \"do everything\", plans spanning several systems, orchestrating many sub-agents with judgement calls on their results",
+      "A retry after an earlier attempt in this conversation failed",
     ],
-    not_for: "Routine work with a clear implementation that the mid tier can finish.",
+    not_for: "Clear work the mid tier can finish, even when it is long or touches several files.",
   },
   fable: {
     what: "Very large or long-running work beyond a normal focused session.",
@@ -266,13 +269,13 @@ const GUIDANCE = {
  */
 const MODEL_FACTS = {
   "claude-haiku-5-5":
-    "Claude Haiku 5.5, $0.10/$0.50. Fast, with adaptive thinking; capable on small, well-specified coding tasks.",
+    "Claude Haiku 5.5, $0.10/$0.50, cache reads $0.01. Fast; reliable on lookups, single commands, and mechanical edits; weak at combining information or multi-step reasoning.",
   "claude-sonnet-5-5":
-    "Claude Sonnet 5.5, $2/$10. Strong everyday coding and agentic model.",
+    "Claude Sonnet 5.5, $2/$10, cache reads $0.10. Strong everyday coding and agentic model, close to Opus 5.5 on most coding tasks.",
   "claude-opus-5-5":
-    "Claude Opus 5.5, $4/$20. The strongest regular model, for hard reasoning, debugging, and design.",
+    "Claude Opus 5.5, $4/$20, cache reads $0.20. The strongest regular model, for the hardest diagnosis, design, and long autonomous work.",
   "claude-fable-5-1":
-    "Claude Fable 5.1, $10/$50. The most capable model, for the longest and hardest work.",
+    "Claude Fable 5.1, $10/$50, cache reads $0.25. The most capable model, for the longest and hardest work.",
 };
 
 /** Build a Jev choice from the exact models available to this account and CLI. */
@@ -282,6 +285,7 @@ export const questionForModels = (models) => {
   return choice(
     [
       "Pick the cheapest exact model that can fully complete this coding request in one pass, without retrying on a stronger model.",
+      "Most coding and system work is mid-tier work; choose the strong tier only when the work matches its good_for list, and the cheapest tier only when the work matches its good_for list.",
       JUDGE_THE_WORK,
       "Judge the reasoning the work requires, not how long or polite the message is or how long a reply it asks for.",
       "If `conversation_before_request` shows an earlier attempt at this work failed, choose a stronger model than a routine first attempt would need.",

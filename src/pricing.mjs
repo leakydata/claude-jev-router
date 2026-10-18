@@ -1,14 +1,18 @@
 // API list prices, used to put a dollar figure on token usage. A subscription is not billed
 // this way, but the relative sizes are what matter when deciding where tokens go.
 
-/** $ per million tokens: [input, output, cache read]. Longest matching id prefix wins. */
+/**
+ * $ per million tokens: [input, output, cache read]. Longest matching id prefix wins. Cache
+ * reads are 0.1x input on most models, 0.05x on Opus 5.5 and Sonnet 5.5, 0.025x on Fable 5.1
+ * (platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-18).
+ */
 const PRICES = {
   "claude-fable-5-1": [10, 50, 0.25],
   "claude-fable-5": [10, 50, 1.0],
   "claude-opus-5-5": [4, 20, 0.2],
   "claude-opus-5": [5, 25, 0.5],
   "claude-opus-4": [5, 25, 0.5],
-  "claude-sonnet-5-5": [2, 10, 0.2],
+  "claude-sonnet-5-5": [2, 10, 0.1],
   "claude-sonnet-5": [2, 10, 0.2],
   "claude-sonnet-4": [3, 15, 0.3],
   "claude-haiku-5-5": [0.1, 0.5, 0.01],
@@ -52,4 +56,17 @@ export function costOf(model, usage = {}) {
     output: output * out,
   };
   return { tokens, dollars, total: Object.values(dollars).reduce((a, b) => a + b, 0) };
+}
+
+/**
+ * $ per token for one request on `model` whose prompt is `promptTokens` long, or null for a
+ * model with no known price. Cache writes are the 1-hour TTL Claude Code uses.
+ */
+export function ratesFor(model, promptTokens = 0) {
+  const priced = pricesFor(model);
+  if (!priced) return null;
+  const long = LONG_PROMPT[priced.id];
+  const factor = long && promptTokens > long.over ? long.factor : 1;
+  const [input, output, read] = priced.rates.map((rate) => (rate * factor) / 1e6);
+  return { input, output, read, write: input * WRITE_1H };
 }

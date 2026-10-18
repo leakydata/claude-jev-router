@@ -64,3 +64,14 @@ test("prices cache writes by TTL and Haiku's long prompts at the higher rate", (
   assert.ok(Math.abs(long.dollars.input - 0.2 * 0.5) < 1e-9);
   assert.equal(costOf("cj-auto", { input_tokens: 5 }), null);
 });
+
+test("a later entry with more output adds the difference, once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cj-report-"));
+  const file = join(root, "s.jsonl");
+  const early = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 };
+  const final = { ...early, output_tokens: 1000 };
+  writeFileSync(file, [reply("x", "claude-opus-5-5", early), reply("x", "claude-opus-5-5", final), reply("x", "claude-opus-5-5", final), ""].join("\n"));
+  const s = await summarize([file], 0, { cacheFile: join(root, "cache.json") });
+  assert.equal(s.total.requests, 1);
+  assert.ok(Math.abs(s.total.dollars - 1000 * 20e-6) < 1e-12, "1,000 output tokens on Opus 5.5");
+});

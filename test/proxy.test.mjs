@@ -490,7 +490,7 @@ test("trailing system messages do not hide the earlier conversation", () => {
 });
 
 /** A fake Anthropic upstream that records request bodies, plus a proxy in front of it. */
-async function harness(t, route) {
+async function harness(t, route, usage = { input_tokens: 10, output_tokens: 5 }) {
   const seen = [];
   const upstream = http.createServer((req, res) => {
     const chunks = [];
@@ -504,7 +504,7 @@ async function harness(t, route) {
       }
       const body = JSON.parse(Buffer.concat(chunks));
       seen.push(body);
-      res.end(JSON.stringify({ id: "m", type: "message", model: body.model, usage: { input_tokens: 10, output_tokens: 5 } }));
+      res.end(JSON.stringify({ id: "m", type: "message", model: body.model, usage }));
     });
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
@@ -641,4 +641,18 @@ test("the proxy totals each session's real usage and cost", async (t) => {
   assert.equal(usage.requests, 1);
   assert.deepEqual(usage.tokens, { cache_read: 0, cache_write: 0, input: 10, output: 5 });
   assert.ok(Math.abs(usage.dollars - (10 * 4 + 5 * 20) / 1e6) < 1e-12);
+});
+
+test("a long conversation stays put when moving it would cost more than it saves", async (t) => {
+  let answer = { choice: "claude-opus-5-5", confidence: 0.9, probabilities: { "claude-opus-5-5": 1 }, ms: 1 };
+  const big = { input_tokens: 10, cache_read_input_tokens: 500000, cache_creation_input_tokens: 2000, output_tokens: 5 };
+  const { seen, send } = await harness(t, async () => answer, big);
+  const s = sid();
+  const first = turn(s, "cj-auto", "design the sync engine");
+  await send(first);
+  answer = { choice: "claude-sonnet-5-5", confidence: 0.9, probabilities: { "claude-sonnet-5-5": 1 }, ms: 1 };
+  const next = { ...first, messages: [...first.messages, { role: "assistant", content: "done" }, { role: "user", content: "now add docs" }] };
+  await send(next);
+  assert.equal(seen[1].model, "claude-opus-5-5");
+  assert.match(readStatus(s).reason, /cache-rebuild/);
 });
