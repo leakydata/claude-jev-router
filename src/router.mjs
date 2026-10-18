@@ -2,6 +2,7 @@ import { TypeSafeClient } from "@typesafe-ai/sdk";
 import {
   COMPLEXITY_MAX_SCORE,
   CONTEXT_WINDOW_TOKENS,
+  DELEGATE_QUESTION,
   QUESTIONS,
   questionForModels,
   THRESHOLDS,
@@ -75,6 +76,29 @@ export async function askJev({ prompt, current, contextTokens, models, history, 
     };
   } catch (err) {
     log(`routing failed, keeping ${current}: ${err.message}`);
+    return null;
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+/**
+ * Jev's probability that a prompt is self-contained bulky gathering worth handing to a
+ * sub-agent, or null on any failure. Kept to one question so the prompt hook stays fast.
+ */
+export async function askDelegation({ prompt, history }) {
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), THRESHOLDS.jevDeadlineMs);
+  try {
+    const result = await getClient().systemOne(
+      {
+        state: { request: prompt, ...(history && { conversation_before_request: history }) },
+        questions: { delegate: DELEGATE_QUESTION },
+      },
+      { signal: abort.signal },
+    );
+    return result.answers.delegate?.noul ?? null;
+  } catch {
     return null;
   } finally {
     clearTimeout(deadline);

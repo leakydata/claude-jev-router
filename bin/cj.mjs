@@ -51,28 +51,51 @@ function autoModelEnv() {
  */
 const savedModelBefore = readSavedModel();
 
+const node = (script) => `"${process.execPath}" "${join(HERE, script)}"`;
+
 /**
  * Claude Code's UI shows the model it asked for, never the one the proxy routed to, so a
  * status line is the only way to surface the decision. `--settings` merges rather than
  * replaces, but a status line the user configured themselves still takes priority: theirs
  * is a deliberate choice and silently overwriting it would be worse than showing nothing.
  */
-function statusLineArgs() {
-  if (process.env.JEV_NO_STATUSLINE) return [];
+function statusLine() {
+  if (process.env.JEV_NO_STATUSLINE) return null;
   for (const dir of [join(process.cwd(), ".claude"), join(homedir(), ".claude")]) {
     try {
-      if (JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine) return [];
+      if (JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).statusLine) return null;
     } catch {
       // No settings file, or unreadable; nothing to preserve.
     }
   }
+  return { type: "command", command: node("cj-statusline.mjs") };
+}
+
+/**
+ * The prompt hook that suggests a sub-agent for bulky, self-contained gathering. It runs
+ * through Claude Code so its note is recorded in the conversation like any hook output,
+ * rather than being spliced into requests where it would break the prompt cache. Hooks from
+ * `--settings` are added to the user's own.
+ */
+function delegationHook() {
+  if (process.env.CJ_NO_DELEGATION_HINT) return null;
+  return { UserPromptSubmit: [{ hooks: [{ type: "command", command: node("cj-hook.mjs"), timeout: 5 }] }] };
+}
+
+function settingsArgs() {
+  const settings = {};
+  const line = statusLine();
+  if (line) settings.statusLine = line;
+  const hooks = delegationHook();
+  if (hooks) settings.hooks = hooks;
+  if (!Object.keys(settings).length) return [];
   // Passed as a file rather than inline JSON: on Windows the args go through a shell, and a
-  // JSON string containing its own quotes does not survive that.
-  const command = `"${process.execPath}" "${join(HERE, "cj-statusline.mjs")}"`;
-  const file = join(tmpdir(), "claude-jev", "settings.json");
+  // JSON string containing its own quotes does not survive that. One file per launch, since
+  // sessions started from different directories can differ.
+  const file = join(tmpdir(), "claude-jev", `settings-${process.pid}.json`);
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ statusLine: { type: "command", command } }));
+    writeFileSync(file, JSON.stringify(settings));
   } catch {
     return [];
   }
@@ -136,7 +159,7 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
     close();
     restoreSavedModel(savedModelBefore);
   });
-  args.push(...statusLineArgs());
+  args.push(...settingsArgs());
   if (process.env.JEV_DEBUG && process.stdout.isTTY) {
     process.stderr.write(`[jev] routing decisions -> ${LOG_FILE}\n`);
   }

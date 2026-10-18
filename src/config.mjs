@@ -97,6 +97,11 @@ export const THRESHOLDS = {
    */
   newTaskProbability: 0.8,
   newTaskMinContextTokens: 100000,
+  /**
+   * Jev's certainty before suggesting that Claude hand a request to a sub-agent. Live checks
+   * put gathering tasks at 0.63-0.91 and everything else at 0.05 or below.
+   */
+  delegateProbability: 0.6,
 };
 
 export const CONTEXT_WINDOW_TOKENS = 1000000;
@@ -177,6 +182,23 @@ export const QUESTIONS = {
     COMPLEXITY_SCALE,
   ),
 };
+
+/**
+ * Whether a request is bulky gathering whose intermediate output the conversation will not
+ * need. Asked by the prompt hook, which nudges Claude to delegate it to a sub-agent so only
+ * the conclusion enters the main context, where it would otherwise be re-read on every later
+ * request.
+ */
+export const DELEGATE_QUESTION = noul(
+  [
+    "Is the `request` a self-contained gathering task: completing it means searching, reading, scanning, or browsing a lot of material (many files, long logs, web pages, many emails or records), and afterwards only a short conclusion or list is needed?",
+    "Answer no when the request asks for edits, design, or debugging that depends on details already in `conversation_before_request`, when it is a short question or a single command, or when it continues work the conversation is in the middle of.",
+  ],
+  {
+    true: "Bulky, self-contained gathering whose raw material will not be needed again.",
+    false: "Small, needs the conversation's context, or is part of ongoing work.",
+  },
+);
 
 /**
  * What each tier is for, phrased as kinds of coding work; facts about exact models live in

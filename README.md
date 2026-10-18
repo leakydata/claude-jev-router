@@ -45,11 +45,13 @@ cj -p "fix the failing test"
 `cj` launches Claude Code with **Claude Jev** selected in `/model`. Selecting another
 model pauses routing; selecting **Claude Jev** resumes it.
 
-The injected status line shows the model used for the last turn:
+The injected status line shows the model used for the last turn and the session's cost so far
+at API list prices, sub-agents included, measured from the responses the proxy forwarded:
 
 ```text
-claude-haiku-5-5 (p=0.98) · my-project · 8% context
-⏸ manual Opus 5.5 · my-project · 21% context
+claude-haiku-5-5 (p=0.98) · my-project · 8% context · ≈$0.42
+claude-opus-5-5 (p=0.91) · new task? /clear or /compact · my-project · 31% context · ≈$6.10
+⏸ manual Opus 5.5 · my-project · 21% context · ≈$1.37
 ```
 
 Claude Code otherwise remains unchanged, including its keybindings, tools, permission prompts,
@@ -139,7 +141,16 @@ sessions, cache reads were 72% of the cost and output 6.5%. `cj` acts on that:
   seeds an auto-compact window of 400K the first time it starts. Replaying two weeks of
   sessions, Claude Code's own ~967K threshold saved 1%, 600K saved 30%, 400K saved 43%, and
   lower windows added many more compactions for little more.
-- **The model is picked per turn** by Jev, using the conversation so far.
+- **The model is picked per turn** by Jev, using the conversation so far. A downgrade needs
+  more confidence (0.5) than other moves, because that is where routing risks quality.
+- **Sub-agents are routed too.** A sub-agent that asks for a concrete model (Explore asks for
+  Opus) is routed by Jev with that model as a ceiling: down, never up. Sub-agents were 43% of
+  two weeks' spend. Picking a model yourself with `/model` pauses routing for that session's
+  sub-agents as well.
+- **Delegation hint.** A prompt hook asks Jev whether a request is bulky, self-contained
+  gathering, such as searching a codebase, reading a long log, browsing pages or going through
+  email. If so, it adds a note suggesting Claude hand it to a sub-agent, so only the conclusion
+  enters the main conversation. Claude decides; set `CJ_NO_DELEGATION_HINT=1` to turn it off.
 - **New-task hint.** When Jev is confident a prompt starts a separate task and the conversation
   is over 100K tokens, the status line suggests `/clear` or `/compact`. Nothing happens unless
   you run one.
@@ -156,6 +167,18 @@ Compaction is your choice:
 `cj` writes the 400K default only once, to `modelSettings["cj-auto"]` in
 `~/.claude/settings.json`, which is the same place `/autocompact` saves to, so a choice you
 make there sticks. Other models' settings are not touched.
+
+Not done, after measuring: clearing old tool results server-side (Anthropic's cost guide
+finds it costs more in cache rewrites than it saves), changing effort per turn (that resets
+the cache), and downscaling screenshots (images average about 930 tokens already; a 1280px
+cap saves 9% of image tokens, and smaller caps cost legibility).
+
+### Seeing the effect
+
+`cj-report` prints where Claude Code's tokens went, from its own transcripts, so it covers
+plain `claude` sessions too: totals, cache-hit rate, sub-agent share, compactions, and a
+breakdown by component, model and day. `cj-report 30` covers 30 days. The first run reads every
+transcript; later runs read only what was appended and take a fraction of a second.
 
 ## Routing policy
 
@@ -191,6 +214,7 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_DEBUG` | Logs decisions and rewrites to `~/.claude-jev.log` in interactive sessions. |
 | `JEV_DUMP` | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Disables the injected status line. |
+| `CJ_NO_DELEGATION_HINT` | Turns off the prompt hook that suggests sub-agents. |
 | `ENABLE_TOOL_SEARCH` | `cj` sets `true`; set `false` to load every MCP tool upfront. |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `cj` sets `1000000`, the routed models' window. |
 
@@ -222,8 +246,18 @@ node bin/cj.mjs -p "what is 2+2?"
 ```
 
 The test suite covers policy, the request format, model rewriting, capability handling,
-conversation context, settings restoration, native model-picker injection, and decision
-display.
+conversation context, sub-agent routing, usage accounting, the report, settings restoration,
+native model-picker injection, and decision display.
+
+### Routing quality
+
+`npm run eval` scores live routing, after the policy, against labelled scenarios, and reports
+misses as under-routed (a weaker model than needed: a quality risk, and a failing exit code)
+or over-routed (a cost). The repository's scenarios are synthetic. To add your own prompts,
+`npm run eval:harvest` samples real ones with their conversation into
+`~/.cache/claude-jev/eval/unlabelled.jsonl`, outside the repository; fill in each `tier` and
+save the file as `labelled.jsonl` beside it. Run the eval before and after changing guidance
+or thresholds in `src/config.mjs`.
 
 ## Limitations
 
