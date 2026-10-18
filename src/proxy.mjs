@@ -55,7 +55,7 @@ export function sanitizeSchema(node) {
  */
 export function newTurnPrompt(body) {
   if (!Array.isArray(body?.tools) || body.tools.length === 0) return null; // auxiliary call
-  const last = body?.messages?.[body.messages.length - 1];
+  const last = conversationMessages(body).at(-1);
   if (!last || last.role !== "user") return null;
   let text;
   if (typeof last.content === "string") {
@@ -70,6 +70,18 @@ export function newTurnPrompt(body) {
     return null;
   }
   return stripReminders(text);
+}
+
+/**
+ * The messages up to the latest user or assistant one. Claude Code appends hook output, such
+ * as SessionStart context, as trailing `role: "system"` messages after the user's prompt, so
+ * the prompt is not always the last entry.
+ */
+function conversationMessages(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  let end = messages.length;
+  while (end > 0 && messages[end - 1]?.role === "system") end--;
+  return messages.slice(0, end);
 }
 
 const stripReminders = (text) =>
@@ -106,7 +118,7 @@ const CONTINUATION = /^This session is being continued from a previous conversat
  * activity carry it. Returns null when there is no earlier turn to describe.
  */
 export function recentContext(body) {
-  const messages = Array.isArray(body?.messages) ? body.messages.slice(0, -1) : [];
+  const messages = conversationMessages(body).slice(0, -1);
   // A user message that carries typed text, not just tool results, opens a turn.
   const turnStarts = [];
   messages.forEach((m, i) => {

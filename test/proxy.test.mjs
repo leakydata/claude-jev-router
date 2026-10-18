@@ -460,3 +460,28 @@ test("model choices carry exact-model facts and flag older versions in a tier", 
   assert.ok(criteria["claude-haiku-5-5"].good_for.length > 1);
   assert.equal(criteria["some-future-model"].facts, undefined, "unknown models get tier guidance only");
 });
+
+test("a prompt followed by hook output in a trailing system message is still a new turn", () => {
+  const body = {
+    tools: [{ name: "Bash" }],
+    messages: [
+      said("user", "fix the race"),
+      { role: "system", content: [{ type: "text", text: "SessionStart hook additional context" }] },
+    ],
+  };
+  assert.equal(newTurnPrompt(body), "fix the race");
+  assert.equal(recentContext(body), null, "the prompt itself is not earlier context");
+});
+
+test("trailing system messages do not hide the earlier conversation", () => {
+  const ctx = recentContext({
+    messages: [
+      said("user", "investigate the race"),
+      said("assistant", "Found it; shall I fix it?"),
+      said("user", "yes"),
+      { role: "system", content: "hook output" },
+    ],
+  });
+  assert.deepEqual(ctx.earlier_user_requests, ["investigate the race"]);
+  assert.equal(ctx.last_assistant_reply, "Found it; shall I fix it?");
+});
