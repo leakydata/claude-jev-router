@@ -78,6 +78,12 @@ export const THRESHOLDS = {
   enoughProbability: 0.7,
   haikuEnoughProbability: 0.85,
   /**
+   * When Jev is this sure the user's prompt says the previous turn fell short, the next turn
+   * runs at least one tier above the one that fell short. The same question, asked of two
+   * weeks of turns that were all on Opus, flagged 5% of them.
+   */
+  stepUpProbability: 0.6,
+  /**
    * A move to a cheaper model must recover the cost of rebuilding the prompt cache on it
    * within this many requests, about two turns of agentic work. Typical per-request cache
    * writes and output, from two weeks of transcripts, price the saving per request.
@@ -174,6 +180,16 @@ export const QUESTIONS = {
     {
       true: "Unrelated to the earlier conversation; clearing it would lose nothing this request needs.",
       false: "Refers to or builds on the earlier conversation, or there is no earlier conversation.",
+    },
+  ),
+  last_turn_fell_short: noul(
+    [
+      "Does the `request` show that the assistant's previous turn, described in `conversation_before_request`, fell short: the user says it is wrong, did not work, or missed the point, corrects it, repeats or rephrases the same request, or asks for it to be redone?",
+      "Answer no when there is no earlier turn, or when the request approves, moves on, asks something new, adds a new requirement, or continues the work.",
+    ],
+    {
+      true: "The previous turn fell short and the user is correcting or repeating it.",
+      false: "There was no previous turn, or the user approved, moved on, or continued.",
     },
   ),
   tool_complexity: score(

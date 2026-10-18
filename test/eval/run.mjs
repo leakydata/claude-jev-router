@@ -78,12 +78,14 @@ if (rescore) {
           contextTokens: Math.round(JSON.stringify(body.messages).length / 4),
           models,
           history: recentContext(body),
+          subagent: !!s.subagent,
         });
         answers[s.prompt] = jev && {
           choice: jev.choice,
           confidence: jev.confidence,
           probabilities: jev.probabilities,
           newTask: jev.newTask,
+          fellShort: jev.fellShort,
         };
         if (process.stderr.isTTY) process.stderr.write(`\rasking Jev ${++done}/${cases.length}`);
       }
@@ -98,14 +100,14 @@ if (rescore) {
 // those are $0.01, $0.10 and $0.20 per million on Haiku, Sonnet and Opus 5.5.
 const COST = { haiku: 0.05, sonnet: 0.5, opus: 1, fable: 1.25 };
 
-/** What the policy would run for one case, starting from Opus early in a conversation. */
+/** What the policy would run for one case, early in a conversation on `servedOn` (Opus). */
 const routed = (s) => {
   const jev = answers[s.prompt];
   const raw = tierOfId(jev?.choice) ?? "none";
   return decide({
     prompt: s.prompt,
     jev: jev && { ...jev, choice: raw, tierProbabilities: tierProbabilities(jev) },
-    current: "opus",
+    current: s.servedOn ?? "opus",
     available: [...new Set(models.map((m) => m.tier))],
   });
 };
@@ -132,6 +134,8 @@ function score(label, pick) {
 // Per-case detail for the policy as configured.
 let taskRight = 0;
 let taskTotal = 0;
+let shortRight = 0;
+let shortTotal = 0;
 for (const s of cases) {
   const jev = answers[s.prompt];
   const raw = tierOfId(jev?.choice) ?? "none";
@@ -144,10 +148,16 @@ for (const s of cases) {
     if (said === s.newTask) taskRight++;
     task = ` new-task ${said === s.newTask ? "ok" : "XX"} p=${jev.newTask.toFixed(2)}`;
   }
+  if (s.fellShort !== undefined && jev?.fellShort != null) {
+    shortTotal++;
+    const said = jev.fellShort >= THRESHOLDS.stepUpProbability;
+    if (said === s.fellShort) shortRight++;
+    task += ` fell-short ${said === s.fellShort ? "ok" : "XX"} p=${jev.fellShort.toFixed(2)}`;
+  }
   const mark = delta === 0 ? "ok   " : delta < 0 ? "UNDER" : "over ";
   const p = tierProbabilities(jev);
   const probs = ["haiku", "sonnet", "opus"].map((t) => (p[t] ?? 0).toFixed(2)).join("/");
-  const tag = s.source === "synthetic" ? "" : `[${s.source}] `;
+  const tag = s.source === "synthetic" ? "" : `[${s.source}${s.subagent ? " sub-agent" : ""}] `;
   const text = `${tag}${s.prompt.slice(0, 64).replace(/\s+/g, " ")}`;
   const held = raw !== got ? ` (jev said ${raw}, ${reason.split("/")[0]})` : "";
   console.log(`${mark} want=${s.tier.padEnd(6)} got=${got.padEnd(6)} p(h/s/o)=${probs}${held}${task} | ${text}`);
@@ -185,6 +195,7 @@ for (const r of rows) {
   );
 }
 if (taskTotal) console.log(`\nnew-task hint: ${taskRight}/${taskTotal} right`);
+if (shortTotal) console.log(`fell-short (step up): ${shortRight}/${shortTotal} right`);
 // The synthetic set is the regression check: the run fails when one of its scenarios is
 // routed down to Haiku when it needed more, the miss that costs the most quality. Real turns
 // are labelled with hindsight by the judge and are reported, not enforced.

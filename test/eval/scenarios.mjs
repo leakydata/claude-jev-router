@@ -1,5 +1,7 @@
 // Hand-labelled routing scenarios, all synthetic. `tier` is the cheapest tier that should do
-// the work in one pass; `newTask` is whether the prompt needs nothing from the conversation.
+// the work in one pass; `newTask` is whether the prompt needs nothing from the conversation;
+// `fellShort` is whether the prompt says the previous turn failed, and `servedOn` the tier
+// that turn ran on (Opus when absent), which a miss steps up from.
 // Real prompts belong in the local, unpublished file `npm run eval:harvest` writes.
 
 const user = (text) => ({ role: "user", content: [{ type: "text", text }] });
@@ -24,6 +26,12 @@ const websocket = [
 const fixedRace = [
   user("Our websocket server drops messages under load. Investigate."),
   reply("It's a race between reconnect and the send-queue flush in src/queue.ts. I added a per-connection lock; tests pass."),
+];
+
+const sonnetFix = [
+  user("the CSV export drops rows that contain a comma in the name field, fix it"),
+  reply("Fixed: names are now quoted when they contain a comma. Tests pass.", [["Edit", { file_path: "src/export.ts" }], ["Bash", { command: "npm test" }]]),
+  results([["Edit"], ["Bash"]]),
 ];
 
 export const SCENARIOS = [
@@ -95,4 +103,8 @@ export const SCENARIOS = [
   { tier: "haiku", newTask: true, prompt: "unrelated: write me a bash one-liner to find files over 1GB in my home dir", prior: fixedRace },
   { tier: "sonnet", newTask: true, prompt: "set up a new vite + react project in ~/code/dashboard", prior: fixedRace },
   { tier: "opus", newTask: true, prompt: "my bluetooth headphones connect but play no audio on kubuntu, find out why and fix it", prior: fixedRace },
+  { tier: "opus", servedOn: "sonnet", newTask: false, fellShort: true, prompt: "no, rows with a quote character in the name still come out broken, and now the header is quoted too", prior: sonnetFix },
+  { tier: "opus", servedOn: "sonnet", newTask: false, fellShort: true, prompt: "that's not what I asked, I wanted the export to skip rows with empty names", prior: sonnetFix },
+  { tier: "haiku", newTask: false, fellShort: false, prompt: "great, commit it", prior: sonnetFix },
+  { tier: "sonnet", newTask: false, fellShort: false, prompt: "nice, now add the same quoting to the JSON-lines export", prior: sonnetFix },
 ];

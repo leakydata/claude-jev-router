@@ -656,3 +656,21 @@ test("a long conversation stays put when moving it would cost more than it saves
   assert.equal(seen[1].model, "claude-opus-5-5");
   assert.match(readStatus(s).reason, /cache-rebuild/);
 });
+
+test("a restarted proxy remembers which model a resumed conversation's cache is warm on", async (t) => {
+  let answer = { choice: "claude-opus-5-5", confidence: 0.9, probabilities: { "claude-opus-5-5": 1 }, ms: 1 };
+  const big = { input_tokens: 10, cache_read_input_tokens: 500000, cache_creation_input_tokens: 2000, output_tokens: 5 };
+  const s = sid();
+  const first = turn(s, "cj-auto", "design the sync engine");
+  {
+    const { send } = await harness(t, async () => answer, big);
+    await send(first);
+  }
+  // A second proxy, as after `cj --resume`, with no memory of its own.
+  answer = { choice: "claude-sonnet-5-5", confidence: 0.9, probabilities: { "claude-sonnet-5-5": 1 }, ms: 1 };
+  const { seen, send } = await harness(t, async () => answer, big);
+  const next = { ...first, messages: [...first.messages, { role: "assistant", content: "done" }, { role: "user", content: "now add docs" }] };
+  await send(next);
+  assert.equal(seen[0].model, "claude-opus-5-5");
+  assert.match(readStatus(s).reason, /cache-rebuild/);
+});

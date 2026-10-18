@@ -200,7 +200,16 @@ transcripts. Results stay under `~/.cache/claude-jev`, never in the repository.
 
 Turns served by cheaper models are judged first, because that is where routing can cost
 quality; the rest come from turns served by Opus, where routing may have spent more than it
-needed to.
+needed to. `--subagents` grades sub-agent tasks instead, an equal share from each model.
+
+- `cj-quality hints [days]` counts how often Claude used a sub-agent on turns where the
+  delegation hint fired, against turns where it did not.
+- `cj-weekly` writes the week's `cj-report`, scan and hint numbers to
+  `~/.cache/claude-jev/weekly/` and shows a desktop notification. It warns when turns on
+  Sonnet or Haiku fall short clearly more often than on Opus (5% before routing changed).
+  `cj-weekly --install` runs it every Monday at 09:00 with a systemd user timer, catching up
+  at the next start if the machine was off; rerun it after changing Node versions, and
+  `--uninstall` removes it.
 
 ## Routing policy
 
@@ -222,10 +231,14 @@ new prompt, a bounded slice of the conversation before it, and per-model guidanc
 - Jev's answer is read as a probability that each tier is the cheapest one able to do the
   work, and routing takes the cheapest tier whose probability of being enough (its share plus
   every cheaper tier's) reaches 0.7, or 0.85 for Haiku;
+- when Jev is at least 60% sure the prompt says the previous turn fell short (a correction,
+  "still broken", the same request again), the turn runs one tier above the one that missed,
+  and a miss on Opus stays on Opus;
 - a move to a cheaper model mid-conversation must recover the cost of rebuilding its prompt
   cache within about 20 requests, priced from the conversation's real prompt size and what
   each model still holds cached: a new conversation, an expired cache, or a return to a model
-  whose cache is still warm moves freely, and a long warm Opus conversation stays on Opus;
+  whose cache is still warm moves freely, and a long warm Opus conversation stays on Opus.
+  This cache state is saved per conversation, so `cj --resume` after a restart keeps it;
 - unavailable tiers step upward rather than silently choosing a weaker model;
 - the long tier is disabled unless `JEV_ALLOW_FABLE=1`.
 

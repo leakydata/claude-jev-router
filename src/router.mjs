@@ -72,6 +72,7 @@ export async function askJev({ prompt, current, contextTokens, models, history, 
         contextSize: Math.min(contextTokens / CONTEXT_WINDOW_TOKENS, 1),
       },
       newTask: history ? (result.answers.new_task?.noul ?? null) : null,
+      fellShort: history ? (result.answers.last_turn_fell_short?.noul ?? null) : null,
       ms: Date.now() - started,
     };
   } catch (err) {

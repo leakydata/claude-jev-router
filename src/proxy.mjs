@@ -18,7 +18,7 @@ import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { log } from "./log.mjs";
 import { costOf } from "./pricing.mjs";
-import { writeDecision, writeStatus, writeSubagentDecision, writeUsage } from "./status.mjs";
+import { readConversation, writeConversation, writeDecision, writeStatus, writeSubagentDecision, writeUsage } from "./status.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -356,10 +356,15 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     let s = convos.get(key);
     if (!s) {
       if (convos.size > 50) convos.delete(convos.keys().next().value);
-      convos.set(key, (s = { tier: null }));
+      // A conversation resumed after a restart picks up where the last process left it.
+      const saved = readConversation(key);
+      s = { tier: null, ...(saved && { tier: saved.tier, model: saved.model, promptTokens: saved.promptTokens, warm: saved.warm }) };
+      convos.set(key, s);
     }
     return s;
   };
+  const saveState = (key, s) =>
+    writeConversation(key, { tier: s.tier, model: s.model, promptTokens: s.promptTokens, warm: s.warm, at: Date.now() });
 
   // Per session: the main conversation's key, whether the user has picked a model by hand,
   // and running usage totals.
@@ -436,6 +441,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         enough: enough ?? null,
         metrics: jev?.metrics ?? null,
         newTask: jev?.newTask ?? null,
+        fellShort: jev?.fellShort ?? null,
         contextTokens,
         reason,
         jev: jev ? { request: jev.request, response: jev.response } : null,
@@ -476,6 +482,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     // one says so in its usage.
     const ttl = usage.cache_creation?.ephemeral_5m_input_tokens > 0 ? 5 * 60000 : 60 * 60000;
     state.warm = { ...state.warm, [tier]: { tokens: cached, until: Date.now() + ttl } };
+    saveState(key, state);
   }
 
   /** The cache state `decide` prices a model switch with. */

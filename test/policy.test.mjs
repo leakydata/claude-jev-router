@@ -106,3 +106,13 @@ test("moving a long conversation to Haiku pays sooner than to Sonnet", () => {
   assert.equal(switchPays("opus", "haiku", big), true);
   assert.equal(switchPays("opus", "sonnet", big), false);
 });
+
+test("a turn that fell short is retried a tier up", () => {
+  const missed = { ...split(0.1, 0.85, 0.05), fellShort: 0.9 };
+  const out = decide({ ...base, current: "sonnet", jev: missed });
+  assert.equal(out.tier, "opus");
+  assert.equal(out.reason, "step-up-after-miss");
+  assert.equal(decide({ ...base, current: "haiku", jev: { ...split(0.9, 0.05, 0.05), fellShort: 0.9 } }).tier, "sonnet");
+  assert.equal(decide({ ...base, current: "sonnet", jev: { ...missed, fellShort: 0.2 } }).tier, "sonnet");
+  assert.equal(decide({ ...base, current: "opus", jev: missed }).tier, "opus", "never steps up into fable");
+});

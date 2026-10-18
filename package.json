@@ -14,7 +14,8 @@
     "cj": "bin/cj.mjs",
     "cj-explain": "bin/cj-explain.mjs",
     "cj-report": "bin/cj-report.mjs",
-    "cj-quality": "bin/cj-quality.mjs"
+    "cj-quality": "bin/cj-quality.mjs",
+    "cj-weekly": "bin/cj-weekly.mjs"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\"",

@@ -115,7 +115,15 @@ export function decide({ prompt, jev, current, available, contextTokens = 0, cac
 
   if (!jev || !TIER_NAMES.includes(jev.choice)) return settle(current, "jev-unavailable");
 
-  const target = cheapestEnough(jev, current);
+  let target = cheapestEnough(jev, current);
+  // A turn that fell short is retried a tier up: the router's misses are mostly work that
+  // needed a stronger model than the prompt made it look, and the user's reply reveals them.
+  // At the top regular tier there is nowhere to step up to, but the work stays there.
+  if (jev.fellShort >= THRESHOLDS.stepUpProbability && rankOf(target) <= rankOf(current)) {
+    const up = TIER_NAMES[rankOf(current) + 1];
+    const floor = up && up !== "fable" ? up : current;
+    return { ...settle(floor, "step-up-after-miss"), enough: enoughAt(jev, current, floor) };
+  }
   const out =
     rankOf(target) < rankOf(current) && !switchPays(current, target, { contextTokens, cache })
       ? settle(current, "downgrade-not-worth-cache-rebuild")

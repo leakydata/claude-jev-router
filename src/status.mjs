@@ -58,6 +58,15 @@ export const writeUsage = (sessionId, usage) => writeStatus(`${sessionId}-usage`
 
 export const readUsage = (sessionId) => (sessionId ? readStatus(`${sessionId}-usage`) : null);
 
+/**
+ * A conversation's routed model and prompt-cache state, kept on disk so a restarted `cj`
+ * resuming the conversation knows which model's cache is still warm. Keyed by conversation,
+ * which is stable across restarts for the same session and opening message.
+ */
+export const writeConversation = (key, state) => writeStatus(`convo-${key}`, state);
+
+export const readConversation = (key) => (key ? readStatus(`convo-${key}`) : null);
+
 /** Latest routing decision for a session, or null if none has been made yet. */
 export function readStatus(sessionId) {
   try {

@@ -15,6 +15,7 @@ const decision = (reason = "") => {
   if (reason.includes("override")) return "prompt override";
   if (reason.includes("jev-unavailable")) return "Jev unavailable; held";
   if (reason.includes("cache-rebuild")) return "cache rebuild avoided";
+  if (reason.includes("step-up")) return "last turn fell short; stepped up";
   if (reason.includes("unavailable")) return "nearest available tier";
   return "Jev recommendation";
 };

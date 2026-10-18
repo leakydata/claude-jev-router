@@ -51,3 +51,23 @@ test("the judge sees the work and the follow-up, bounded", () => {
   assert.equal(input.next_message, "thanks");
   assert.ok(input.final_reply.length < 5000);
 });
+
+test("a delegation hint recorded on a prompt is attached to its turn", () => {
+  const hint = line({
+    type: "attachment",
+    attachment: { type: "hook_additional_context", content: ["Claude Jev routing note (p=0.83): this request looks like gathering"] },
+  });
+  const blob = line({ type: "api-request-blob", message: { role: "system", content: "mentions Claude Jev routing note" } });
+  const file = transcript([user("find every TODO in the repo"), hint, blob, assistant("m1", "claude-opus-5-5", [{ type: "text", text: "Found 12." }])]);
+  const [t] = readTurns(file);
+  assert.equal(t.hint, 0.83);
+  assert.equal(t.prior.length, 0);
+});
+
+test("the weekly check warns only when a cheaper model clearly falls short more", async () => {
+  const { weeklyWarning } = await import("../src/quality.mjs");
+  const week = (sonnet, opus) => ({ byModel: { "claude-sonnet-5-5": sonnet, "claude-opus-5-5": opus } });
+  assert.match(weeklyWarning(week({ turns: 60, short: 12 }, { turns: 100, short: 4 })), /sonnet turns fell short 20%/);
+  assert.equal(weeklyWarning(week({ turns: 60, short: 4 }, { turns: 100, short: 4 })), null);
+  assert.equal(weeklyWarning(week({ turns: 8, short: 4 }, { turns: 100, short: 4 })), null, "too few turns to tell");
+});

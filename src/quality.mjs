@@ -183,11 +183,17 @@ const JUDGE_SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
+// Sub-agent tasks have no developer follow-up: the reply goes back to the main agent.
+const SUBAGENT_NOTE = `
+
+Some turns are sub-agent tasks: the main agent delegated the request, and the final reply goes back to the main agent, not the developer. For those, judge served_ok by whether the final reply answers the task correctly and completely, and needed by the work the task actually took.`;
+
 /** What the judge reads about one turn, bounded to a few thousand tokens. */
 export function judgeInput(turn) {
   const history = recentContext({ messages: [...turn.prior, { role: "user", content: turn.prompt }] });
   return JSON.stringify(
     {
+      ...(turn.subagent && { kind: "sub-agent task delegated by the main agent" }),
       conversation_before: history ?? "none: this is the first request",
       request: clip(turn.prompt, 6000),
       what_the_assistant_did: {
@@ -198,7 +204,11 @@ export function judgeInput(turn) {
         sample_tool_results: turn.results.slice(0, 15),
       },
       final_reply: clip(turn.reply, 4000) || "(none)",
-      next_message: turn.next ? clip(turn.next, 2000) : "(none: the session ended or moved on)",
+      next_message: turn.subagent
+        ? "(none: a sub-agent's reply goes to the main agent)"
+        : turn.next
+          ? clip(turn.next, 2000)
+          : "(none: the session ended or moved on)",
     },
     null,
     1,
@@ -220,7 +230,7 @@ function runJudge(input) {
   const args = [
     "-p", "--model", "claude-opus-5-5", "--effort", "high", "--tools", "", "--strict-mcp-config",
     "--setting-sources", "", "--no-session-persistence", "--output-format", "json",
-    "--system-prompt", JUDGE_SYSTEM, "--json-schema", JUDGE_SCHEMA,
+    "--system-prompt", JUDGE_SYSTEM + SUBAGENT_NOTE, "--json-schema", JUDGE_SCHEMA,
   ];
   return new Promise((resolve) => {
     const child = spawn("claude", args, { cwd, env, stdio: ["pipe", "pipe", "ignore"] });
@@ -253,18 +263,43 @@ const shuffle = (a) => {
  * served by Opus, where routing may have spent more than needed. Appends to JUDGED_FILE in
  * the eval's scenario format.
  */
-export async function judge(count, days, { onProgress } = {}) {
+/**
+ * Sub-agent tasks from the last `days` days, at most `perTier` served by each tier. Sub-agent
+ * transcripts run to tens of gigabytes, so files are sampled before any is read.
+ */
+function subagentTurns(days, perTier, skip) {
+  const since = Date.now() - days * 86400000;
+  const files = shuffle(transcriptFiles(undefined, since).filter((f) => /[\\/]subagents[\\/]/.test(f)));
+  const byTier = { haiku: [], sonnet: [], opus: [] };
+  for (const file of files) {
+    if (Object.values(byTier).every((list) => list.length >= perTier)) break;
+    const [task] = readTurns(file);
+    const tier = task && tierOf(mainModel(task));
+    if (!task || !task.requests || task.at < since || skip.has(task.id) || !byTier[tier]) continue;
+    if (byTier[tier].length < perTier) byTier[tier].push(task);
+  }
+  return Object.values(byTier).flat();
+}
+
+export async function judge(count, days, { onProgress, subagents = false } = {}) {
   const already = new Set();
   try {
     for (const line of readFileSync(JUDGED_FILE, "utf8").split("\n")) if (line) already.add(JSON.parse(line).id);
   } catch {
     // Nothing judged yet.
   }
-  const turns = collectTurns(days).filter((t) => !already.has(t.id) && t.prompt.length > 1 && tierOf(mainModel(t)));
-  const cheap = shuffle(turns.filter((t) => tierOf(mainModel(t)) !== "opus" && tierOf(mainModel(t)) !== "fable"));
-  const strong = shuffle(turns.filter((t) => tierOf(mainModel(t)) === "opus"));
-  const picked = cheap.slice(0, Math.floor(count / 2));
-  picked.push(...strong.slice(0, count - picked.length));
+  let turns;
+  let picked;
+  if (subagents) {
+    // Sub-agents already run on every tier, so each gets an equal share of the sample.
+    turns = picked = subagentTurns(days, Math.ceil(count / 3), already).slice(0, count);
+  } else {
+    turns = collectTurns(days).filter((t) => !already.has(t.id) && t.prompt.length > 1 && tierOf(mainModel(t)));
+    const cheap = shuffle(turns.filter((t) => tierOf(mainModel(t)) !== "opus" && tierOf(mainModel(t)) !== "fable"));
+    const strong = shuffle(turns.filter((t) => tierOf(mainModel(t)) === "opus"));
+    picked = cheap.slice(0, Math.floor(count / 2));
+    picked.push(...strong.slice(0, count - picked.length));
+  }
   privateDir(join(homedir(), ".cache", "claude-jev", "eval"));
   const results = [];
   let done = 0;
@@ -276,6 +311,7 @@ export async function judge(count, days, { onProgress } = {}) {
       id: t.id,
       at: t.at,
       served: mainModel(t),
+      ...(t.subagent && { subagent: true }),
       tier: verdict.needed,
       served_ok: verdict.served_ok,
       why: verdict.why,
@@ -301,17 +337,17 @@ export function formatJudged(run) {
     `Judged ${run.results.length} of ${run.picked} turns this run (≈$${cost.toFixed(2)} at list prices); ${rows.length} judged in all.`,
     "",
     "Model the judge says each turn needed, by the model that served it:",
-    "  served by                  needed: haiku  sonnet  opus   served ok / minor / no",
+    "  served by                    needed: haiku  sonnet  opus   served ok / minor / no",
   ];
   const by = {};
   for (const r of rows) {
-    const b = (by[r.served] ??= { haiku: 0, sonnet: 0, opus: 0, yes: 0, minor: 0, no: 0 });
+    const b = (by[`${r.subagent ? "sub-agent " : ""}${r.served}`] ??= { haiku: 0, sonnet: 0, opus: 0, yes: 0, minor: 0, no: 0 });
     b[r.tier]++;
     b[r.served_ok]++;
   }
   for (const [model, b] of Object.entries(by).sort()) {
     lines.push(
-      `  ${model.padEnd(24)} ${String(b.haiku).padStart(13)} ${String(b.sonnet).padStart(7)} ${String(b.opus).padStart(5)}   ${b.yes} / ${b.minor} / ${b.no}`,
+      `  ${model.padEnd(34)} ${String(b.haiku).padStart(5)} ${String(b.sonnet).padStart(7)} ${String(b.opus).padStart(5)}   ${b.yes} / ${b.minor} / ${b.no}`,
     );
   }
   const rank = { haiku: 0, sonnet: 1, opus: 2, fable: 3 };
@@ -325,4 +361,75 @@ export function formatJudged(run) {
   }
   lines.push("", `Labels are in ${JUDGED_FILE}; \`npm run eval\` now scores routing against them.`);
   return lines.join("\n");
+}
+
+const DELEGATING_TOOLS = new Set(["Agent", "Task"]);
+
+/**
+ * How often Claude acted on the delegation hint: of the turns the prompt hook flagged as
+ * bulky gathering, how many used a sub-agent, against the rate on turns it did not flag.
+ */
+export function hints(days) {
+  const turns = collectTurns(days);
+  const delegated = (t) => t.tools.some((tool) => DELEGATING_TOOLS.has(tool.name));
+  const hinted = turns.filter((t) => t.hint != null);
+  const plain = turns.filter((t) => t.hint == null);
+  return {
+    days,
+    hinted: hinted.length,
+    hintedDelegated: hinted.filter(delegated).length,
+    plain: plain.length,
+    plainDelegated: plain.filter(delegated).length,
+    ignored: hinted.filter((t) => !delegated(t)).map((t) => ({ p: t.hint, prompt: t.prompt, requests: t.requests })),
+  };
+}
+
+export function formatHints(h) {
+  const rate = (k, n) => (n ? `${k}/${n} (${pct(k / n)})` : "none");
+  const lines = [
+    `Delegation hint, last ${h.days} days`,
+    `  turns with the hint that used a sub-agent:     ${rate(h.hintedDelegated, h.hinted)}`,
+    `  turns without the hint that used a sub-agent:  ${rate(h.plainDelegated, h.plain)}`,
+  ];
+  if (h.ignored.length) {
+    lines.push("", "Hinted turns done without a sub-agent:");
+    for (const t of h.ignored.slice(0, 10)) {
+      lines.push(`  p=${t.p.toFixed(2)} ${t.requests} requests | ${clip(t.prompt, 80).replace(/\s+/g, " ")}`);
+    }
+  }
+  if (h.hinted >= 10 && h.hintedDelegated / h.hinted <= h.plainDelegated / Math.max(1, h.plain)) {
+    lines.push("", "Claude delegates no more often with the hint than without it; consider CJ_NO_DELEGATION_HINT=1.");
+  }
+  return lines.join("\n");
+}
+
+// Share of turns that fell short on Opus 5.5 over the two weeks before routing changed
+// (814 turns, 2026-10-04 to 2026-10-18): the baseline when a week has too few Opus turns.
+const OPUS_BASELINE = 0.05;
+
+/**
+ * A warning when turns on a cheaper model fall short clearly more often than on Opus: at
+ * least 15 turns, five points above the Opus rate, and the lower end of the 95% interval
+ * still above it. Null when nothing stands out.
+ */
+export function weeklyWarning(s) {
+  const tiers = {};
+  for (const [model, b] of Object.entries(s.byModel)) {
+    const tier = tierOf(model);
+    if (!tier) continue;
+    const t = (tiers[tier] ??= { turns: 0, short: 0 });
+    t.turns += b.turns;
+    t.short += b.short;
+  }
+  const opus = tiers.opus;
+  const baseline = opus?.turns >= 30 ? opus.short / opus.turns : OPUS_BASELINE;
+  for (const tier of ["haiku", "sonnet"]) {
+    const t = tiers[tier];
+    if (!t || t.turns < 15) continue;
+    const rate = t.short / t.turns;
+    if (rate - baseline >= 0.05 && wilson(t.short, t.turns)[0] > baseline) {
+      return `${tier} turns fell short ${pct(rate)} of the time against ${pct(baseline)} on Opus (${t.turns} turns); consider raising enoughProbability`;
+    }
+  }
+  return null;
 }

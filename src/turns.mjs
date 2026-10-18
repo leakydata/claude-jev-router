@@ -36,6 +36,8 @@ const slim = (content) =>
         );
 
 const BIG_LINE = 256 * 1024;
+// The delegation hook's note, which Claude Code records as a hook attachment on the prompt.
+const HINT = "Claude Jev routing note";
 const OPEN = Buffer.from('{"');
 
 /**
@@ -53,7 +55,7 @@ function* entries(buf) {
     if (!line.subarray(0, 2).equals(OPEN)) continue;
     if (line.length <= BIG_LINE) {
       const text = line.toString("utf8");
-      if (!/"type":"(user|assistant)"/.test(text)) continue;
+      if (!/"type":"(user|assistant)"/.test(text) && !text.includes(HINT)) continue;
       try {
         yield JSON.parse(text);
       } catch {
@@ -82,7 +84,8 @@ function* entries(buf) {
 /**
  * Reads one transcript into turns. Each turn has the prompt, the conversation before it
  * (slimmed, at most `prior` messages), the models that served it with their request counts,
- * the tool calls made, the final reply, and the next prompt in the same conversation.
+ * the tool calls made, the final reply, the next prompt in the same conversation, and the
+ * delegation hint's probability when the prompt hook added one.
  */
 export function readTurns(file, { prior = 30 } = {}) {
   try {
@@ -97,6 +100,12 @@ export function readTurns(file, { prior = 30 } = {}) {
   let turn = null;
   const seenRequests = new Set();
   for (const e of entries(readFileSync(file))) {
+    if (e.type === "attachment") {
+      const note = [].concat(e.attachment?.content ?? []).find((c) => typeof c === "string" && c.includes(HINT));
+      if (turn && note) turn.hint = Number(/\(p=([\d.]+)\)/.exec(note)?.[1] ?? 1);
+      continue;
+    }
+    if (e.type !== "user" && e.type !== "assistant") continue;
     const m = e.message;
     if (!m?.role) continue;
     const msg = { role: m.role, content: slim(m.content) };
@@ -118,6 +127,7 @@ export function readTurns(file, { prior = 30 } = {}) {
           results: [],
           reply: "",
           next: null,
+          hint: null,
         };
         turns.push(turn);
       }
