@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import zlib from "node:zlib";
 import {
+  ADVISOR,
   TIERS,
   tierOf,
   idOf,
@@ -17,8 +18,8 @@ import {
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { log } from "./log.mjs";
-import { costOf } from "./pricing.mjs";
-import { readConversation, writeConversation, writeDecision, writeStatus, writeSubagentDecision, writeUsage } from "./status.mjs";
+import { advisorCosts, costOf } from "./pricing.mjs";
+import { readAdvice, readConversation, writeAdvice, writeConversation, writeDecision, writeStatus, writeSubagentDecision, writeUsage } from "./status.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -268,6 +269,99 @@ export function isContinuation(body) {
   return text.includes("This session is being continued from a previous conversation");
 }
 
+const isAdvisorBlock = (b) =>
+  b?.type === "advisor_tool_result" || (b?.type === "server_tool_use" && b.name === "advisor");
+
+/** A stable identity for a response content block, to find it again in later history. */
+function fingerprint(b) {
+  if (b?.type === "tool_use" || b?.type === "server_tool_use") return b.id ? `id:${b.id}` : null;
+  if (b?.type === "thinking") return b.signature ? `th:${b.signature.slice(-48)}` : null;
+  if (b?.type === "redacted_thinking") return b.data ? `rt:${b.data.slice(-48)}` : null;
+  if (b?.type === "text") return b.text ? `tx:${createHash("sha1").update(b.text).digest("hex")}` : null;
+  return null;
+}
+
+/**
+ * The advisor consultations in one response's content, each with the blocks around it, so
+ * they can be put back where they were.
+ */
+export function adviceRecords(content = []) {
+  const records = [];
+  content.forEach((b, i) => {
+    if (b?.type !== "server_tool_use" || b.name !== "advisor") return;
+    const result = content.find((r) => r?.type === "advisor_tool_result" && r.tool_use_id === b.id);
+    if (!result) return;
+    const others = (from, step) => {
+      for (let j = from; j >= 0 && j < content.length; j += step) {
+        if (!isAdvisorBlock(content[j])) return fingerprint(content[j]);
+      }
+      return null;
+    };
+    records.push({ id: b.id, prev: others(i - 1, -1), next: others(i + 1, 1), blocks: [b, result] });
+  });
+  return records;
+}
+
+/**
+ * Puts advisor consultations back into the assistant messages they came from. Claude Code
+ * drops these blocks when it replays history, which loses the advice for later requests and
+ * makes every consultation rebuild the advisor's prompt cache from scratch.
+ */
+export function restoreAdvice(body, records) {
+  if (!records.length) return;
+  const before = new Map();
+  const after = new Map();
+  for (const r of records) {
+    if (r.next) before.set(r.next, [...(before.get(r.next) ?? []), r]);
+    else if (r.prev) after.set(r.prev, [...(after.get(r.prev) ?? []), r]);
+  }
+  for (const m of body.messages ?? []) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const present = new Set(m.content.filter(isAdvisorBlock).map((b) => b.id ?? b.tool_use_id));
+    const fresh = (list) => (list ?? []).filter((r) => !present.has(r.id)).flatMap((r) => r.blocks);
+    let changed = false;
+    const out = [];
+    for (const b of m.content) {
+      const f = fingerprint(b);
+      const pre = fresh(f && before.get(f));
+      const post = fresh(f && after.get(f));
+      if (pre.length || post.length) changed = true;
+      out.push(...pre, b, ...post);
+    }
+    if (changed) m.content = out;
+  }
+}
+
+/**
+ * Gives a request on an advisor tier the advisor tool and its earlier consultations, and
+ * strips consultations from any other request: the API rejects history holding advisor
+ * results when the tool is gone, and adding the tool to another tier would change its cached
+ * prefix. Returns whether the request needs the advisor beta header.
+ */
+export function applyAdvisor(body, tier, records = [], { allowed = true } = {}) {
+  if (allowed && ADVISOR.enabled() && ADVISOR.tiers.includes(tier) && Array.isArray(body.tools)) {
+    if (!body.tools.some((t) => t.type?.startsWith("advisor_"))) {
+      body.tools.push({
+        type: "advisor_20260301",
+        name: "advisor",
+        model: ADVISOR.model,
+        max_uses: ADVISOR.maxUses,
+        caching: { type: "ephemeral", ttl: "1h" },
+      });
+      if (typeof body.system === "string") body.system = [{ type: "text", text: body.system }];
+      body.system = [...(body.system ?? []), { type: "text", text: ADVISOR.note }];
+    }
+    restoreAdvice(body, records);
+    return true;
+  }
+  for (const m of body.messages ?? []) {
+    if (m.role === "assistant" && Array.isArray(m.content) && m.content.some(isAdvisorBlock)) {
+      m.content = m.content.filter((b) => !isAdvisorBlock(b));
+    }
+  }
+  return false;
+}
+
 const DECOMPRESS = {
   gzip: zlib.createGunzip,
   "x-gzip": zlib.createGunzip,
@@ -293,6 +387,7 @@ export function readResponseUsage(stream, onUsage) {
   }
   let model = null;
   let usage = null;
+  let content = [];
   let sse = false;
   let pending = "";
   const whole = [];
@@ -306,6 +401,26 @@ export function readResponseUsage(stream, onUsage) {
         usage = { ...event.message?.usage };
       } else if (event.type === "message_delta" && event.usage) {
         usage = { ...usage, ...event.usage };
+      } else if (event.type === "content_block_start") {
+        content[event.index] = { ...event.content_block };
+      } else if (event.type === "content_block_delta") {
+        const b = content[event.index];
+        const d = event.delta ?? {};
+        if (!b) return;
+        if (d.type === "text_delta") b.text = (b.text ?? "") + d.text;
+        else if (d.type === "thinking_delta") b.thinking = (b.thinking ?? "") + d.thinking;
+        else if (d.type === "signature_delta") b.signature = d.signature;
+        else if (d.type === "input_json_delta") b.partial = (b.partial ?? "") + d.partial_json;
+      } else if (event.type === "content_block_stop") {
+        const b = content[event.index];
+        if (b && "partial" in b) {
+          try {
+            b.input = b.partial ? JSON.parse(b.partial) : (b.input ?? {});
+          } catch {
+            // Leave the input as it started.
+          }
+          delete b.partial;
+        }
       }
     } catch {
       // A partial or non-JSON line; usage is best effort.
@@ -326,11 +441,12 @@ export function readResponseUsage(stream, onUsage) {
         const body = JSON.parse(whole.join(""));
         model = body.model;
         usage = body.usage;
+        content = body.content ?? [];
       } catch {
         return;
       }
     }
-    if (model && usage) onUsage(model, usage);
+    if (model && usage) onUsage(model, usage, content);
   });
 }
 
@@ -363,6 +479,15 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     }
     return s;
   };
+  // Per conversation: advisor consultations from its responses, to restore into its history.
+  const advice = new Map();
+  const adviceFor = (key) => {
+    if (!advice.has(key)) {
+      if (advice.size > 50) advice.delete(advice.keys().next().value);
+      advice.set(key, readAdvice(key));
+    }
+    return advice.get(key);
+  };
   const saveState = (key, s) =>
     writeConversation(key, { tier: s.tier, model: s.model, promptTokens: s.promptTokens, warm: s.warm, at: Date.now() });
 
@@ -376,7 +501,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
    * Picks the model for one request and rewrites the body to it. `ceiling` is the concrete
    * model a sub-agent asked for; routing never goes above its tier.
    */
-  async function routeRequest(body, { key, session, isMain, ceiling }) {
+  async function routeRequest(body, { key, session, isMain, ceiling, counting = false }) {
     const state = stateFor(key);
     const ceilingTier = ceiling ? tierOf(ceiling) : null;
     // What the prompt cache was built on, which is what a downgrade would discard. A new
@@ -457,6 +582,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     const model = state.model ?? ceiling ?? idOf(tier);
     debug(`${key} rewrite ${body.model} -> ${model}`);
     applyTier(body, tier, model);
+    // Only work routed below what was asked for gets the advisor: the main conversation asks
+    // for the router's best (Opus), and a sub-agent that asked for Sonnet already has it.
+    const advised = applyAdvisor(body, tier, ADVISOR.enabled() ? adviceFor(key) : [], {
+      allowed: !counting && (!ceilingTier || rankOf(ceilingTier) > rankOf(tier)),
+    });
     // Publish what went out. Claude Code's UI shows the row you picked, not the model it
     // resolved to, so the status line is the only place this is visible. `claude -p` omits
     // metadata on the first request of a session, so the decision is filed under the
@@ -466,6 +596,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
       if (isMain) writeDecision(session || key, decision);
       else writeSubagentDecision(session, decision);
     }
+    return advised;
   }
 
   /**
@@ -501,6 +632,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     t.dollars += cost.total;
     for (const [k, v] of Object.entries(cost.tokens)) t.tokens[k] = (t.tokens[k] ?? 0) + v;
     t.byModel[model] = (t.byModel[model] ?? 0) + cost.total;
+    for (const a of advisorCosts(usage)) {
+      t.dollars += a.cost.total;
+      t.byModel[`${a.model} (advisor)`] = (t.byModel[`${a.model} (advisor)`] ?? 0) + a.cost.total;
+      t.advice = (t.advice ?? 0) + 1;
+    }
     t.at = Date.now();
     totals.set(sessionKey, t);
     writeUsage(sessionKey, t);
@@ -516,6 +652,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
       let out = Buffer.concat(chunks);
       let usageKey = null;
       let convoKey = null;
+      let advised = false;
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -544,11 +681,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
 
           if (isAuto(body.model)) {
             if (isMain) manual.delete(session);
-            await routeRequest(body, { key, session, isMain });
+            advised = await routeRequest(body, { key, session, isMain, counting });
           } else if (!isMain && agentTurn && tierOf(body.model) && !manual.has(session)) {
             // A sub-agent asking for a concrete model: Claude or the agent's author picked it
             // as the strongest the task needs, so Jev may route the task down from it, never up.
-            await routeRequest(body, { key, session, isMain, ceiling: body.model });
+            advised = await routeRequest(body, { key, session, isMain, ceiling: body.model, counting });
           } else {
             // Anything else is a model the user chose, and an explicit choice beats the
             // router. That also covers Claude Code's own cheap calls for titles and
@@ -571,6 +708,10 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
       const transport = target.protocol === "http:" ? http : https;
       const headers = { ...req.headers, host: target.host };
       delete headers["content-length"];
+      if (advised) {
+        const betas = String(headers["anthropic-beta"] ?? "").split(",").map((b) => b.trim()).filter(Boolean);
+        if (!betas.includes(ADVISOR.beta)) headers["anthropic-beta"] = [...betas, ADVISOR.beta].join(",");
+      }
       if (req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "")) {
         delete headers["accept-encoding"];
       }
@@ -608,7 +749,16 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           }
           res.writeHead(up.statusCode, up.headers);
           if (usageKey && up.statusCode === 200 && /^\/v1\/messages(?:\?|$)/.test(req.url ?? "")) {
-            readResponseUsage(up, (model, usage) => {
+            readResponseUsage(up, (model, usage, content) => {
+              const records = advised ? adviceRecords(content) : [];
+              if (records.length) {
+                const list = adviceFor(convoKey);
+                list.push(...records);
+                if (list.length > 200) list.splice(0, list.length - 200);
+                writeAdvice(convoKey, list);
+                debug(`${convoKey} advisor consulted x${records.length}`);
+              }
+              if (advised) debug(`advisor usage ${JSON.stringify(usage.iterations ?? [])}`);
               recordUsage(usageKey, model, usage);
               noteCache(convoKey, model, usage);
             });

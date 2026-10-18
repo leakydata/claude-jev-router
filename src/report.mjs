@@ -4,7 +4,7 @@
 import { createReadStream, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { costOf } from "./pricing.mjs";
+import { costOf, advisorCosts } from "./pricing.mjs";
 
 export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const CACHE_FILE = join(homedir(), ".cache", "claude-jev", "report.json");
@@ -90,6 +90,15 @@ async function scanFile(path, entry) {
     for (const k of COMPONENTS) {
       b.dollars[k] += cost.dollars[k];
       b.tokens[k] += cost.tokens[k];
+    }
+    // Advisor consultations are another model's tokens, so they get a row of their own.
+    for (const a of advisorCosts(m.usage)) {
+      const ab = (d.models[`${a.model} (advisor)`] ??= bucket());
+      ab.requests++;
+      for (const k of COMPONENTS) {
+        ab.dollars[k] += a.cost.dollars[k];
+        ab.tokens[k] += a.cost.tokens[k];
+      }
     }
   };
   // Lines are split as bytes and only decoded when they can hold usage: transcripts carry

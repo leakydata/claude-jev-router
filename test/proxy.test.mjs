@@ -674,3 +674,48 @@ test("a restarted proxy remembers which model a resumed conversation's cache is 
   assert.equal(seen[0].model, "claude-opus-5-5");
   assert.match(readStatus(s).reason, /cache-rebuild/);
 });
+
+test("advisor consultations Claude Code drops are put back where they were", async () => {
+  const { adviceRecords, applyAdvisor } = await import("../src/proxy.mjs");
+  const call = { type: "server_tool_use", id: "srvtoolu_1", name: "advisor", input: {} };
+  const result = { type: "advisor_tool_result", tool_use_id: "srvtoolu_1", content: { type: "advisor_redacted_result", encrypted_content: "x" } };
+  const thinking = { type: "thinking", thinking: "plan", signature: "sig-abc" };
+  const edit = { type: "tool_use", id: "toolu_9", name: "Edit", input: {} };
+  const records = adviceRecords([thinking, call, result, edit]);
+  assert.equal(records.length, 1);
+  // Claude Code replays the response without the advisor blocks.
+  const replay = () => ({ tools: [{ name: "Edit" }], messages: [{ role: "user", content: "fix it" }, { role: "assistant", content: [thinking, edit] }] });
+  process.env.CJ_ADVISOR = "1";
+  try {
+    const body = replay();
+    assert.equal(applyAdvisor(body, "sonnet", records), true);
+    assert.deepEqual(body.messages[1].content.map((b) => b.type), ["thinking", "server_tool_use", "advisor_tool_result", "tool_use"]);
+    assert.equal(body.tools.at(-1).type, "advisor_20260301");
+    assert.match(body.system.at(-1).text, /advisor tool/);
+    applyAdvisor(body, "sonnet", records);
+    assert.equal(body.messages[1].content.length, 4, "restoring twice adds nothing");
+    assert.equal(body.tools.filter((t) => t.name === "advisor").length, 1);
+    assert.equal(body.system.length, 1, "the note is added once");
+    // On another tier the consultations are stripped and the tool stays out.
+    const opus = { tools: [{ name: "Edit" }], messages: structuredClone(body.messages) };
+    assert.equal(applyAdvisor(opus, "opus", records), false);
+    assert.deepEqual(opus.messages[1].content.map((b) => b.type), ["thinking", "tool_use"]);
+    assert.equal(opus.tools.length, 1);
+  } finally {
+    delete process.env.CJ_ADVISOR;
+  }
+});
+
+test("advisor consultations are priced at the advisor's model", async () => {
+  const { advisorCosts } = await import("../src/pricing.mjs");
+  const usage = {
+    input_tokens: 4,
+    iterations: [
+      { type: "message", input_tokens: 2, output_tokens: 100 },
+      { type: "advisor_message", model: "claude-opus-5-5", input_tokens: 0, cache_creation_input_tokens: 1000000, cache_creation: { ephemeral_1h_input_tokens: 1000000 }, output_tokens: 0 },
+    ],
+  };
+  const [a] = advisorCosts(usage);
+  assert.equal(a.model, "claude-opus-5-5");
+  assert.equal(a.cost.total, 8);
+});

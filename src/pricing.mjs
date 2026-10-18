@@ -59,6 +59,18 @@ export function costOf(model, usage = {}) {
 }
 
 /**
+ * The advisor consultations inside one response, each priced at its own model. The response's
+ * top-level usage covers only the executor; each consultation is an `advisor_message` entry
+ * in `usage.iterations`.
+ */
+export function advisorCosts(usage = {}) {
+  return (usage.iterations ?? [])
+    .filter((i) => i?.type === "advisor_message" && i.model)
+    .map((i) => ({ model: i.model, cost: costOf(i.model, i) }))
+    .filter((a) => a.cost);
+}
+
+/**
  * $ per token for one request on `model` whose prompt is `promptTokens` long, or null for a
  * model with no known price. Cache writes are the 1-hour TTL Claude Code uses.
  */

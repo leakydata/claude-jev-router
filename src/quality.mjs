@@ -106,7 +106,8 @@ export async function scan(days, { onProgress } = {}) {
   for (const t of turns) {
     const p = cache[t.id];
     if (typeof p !== "number") continue;
-    const b = (byModel[mainModel(t)] ??= { turns: 0, short: 0, examples: [] });
+    // Turns where the executor consulted the advisor are counted apart, to see what it buys.
+    const b = (byModel[`${mainModel(t)}${t.advice ? " +advisor" : ""}`] ??= { turns: 0, short: 0, examples: [] });
     b.turns++;
     if (p >= 0.5) {
       b.short++;

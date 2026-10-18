@@ -67,6 +67,10 @@ export const writeConversation = (key, state) => writeStatus(`convo-${key}`, sta
 
 export const readConversation = (key) => (key ? readStatus(`convo-${key}`) : null);
 
+/** Advisor consultations seen in a conversation's responses, which Claude Code drops from history. */
+export const writeAdvice = (key, records) => writeStatus(`advice-${key}`, { records });
+export const readAdvice = (key) => (key ? (readStatus(`advice-${key}`)?.records ?? []) : []);
+
 /** Latest routing decision for a session, or null if none has been made yet. */
 export function readStatus(sessionId) {
   try {

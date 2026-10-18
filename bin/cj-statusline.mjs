@@ -58,6 +58,7 @@ if (status?.manual) {
 // The session's cost so far, at API list prices, from the usage the proxy saw on real
 // responses, sub-agents included. Claude Code's own estimate cannot price the sentinel.
 const usage = readUsage(input.session_id);
-const cost = usage ? ` ${DIM}· ≈$${usage.dollars.toFixed(2)}${RESET}` : "";
+const advice = usage?.advice ? ` · advisor ×${usage.advice}` : "";
+const cost = usage ? ` ${DIM}· ≈$${usage.dollars.toFixed(2)}${advice}${RESET}` : "";
 
 process.stdout.write(`${routed} ${DIM}·${RESET} ${dir} ${DIM}· ${pct}% context${RESET}${cost}\n`);

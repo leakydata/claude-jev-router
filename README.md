@@ -211,6 +211,26 @@ needed to. `--subagents` grades sub-agent tasks instead, an equal share from eac
   at the next start if the machine was off; rerun it after changing Node versions, and
   `--uninstall` removes it.
 
+### Opus as an advisor (experimental)
+
+With `CJ_ADVISOR=1` (in `~/.claude-jev.env` or the environment), turns routed to Sonnet get
+the API's advisor tool: Sonnet does the work and can consult Opus 5.5 mid-response, at hard
+points, for Opus's judgement at close to Sonnet's price. A short system note tells Sonnet
+when to consult (concurrency, security, data loss, design choices, multi-file changes, a failed
+attempt, and once before finishing long tasks); without it Sonnet almost never does.
+
+- Sub-agents get it only when routed below the model they asked for.
+- Claude Code drops the consultations from the history it replays, so the proxy keeps them
+  per conversation and puts them back. That keeps the advice in view on later requests and
+  lets the advisor read its own prompt cache instead of rebuilding it.
+- Requests on other models have consultations stripped and no advisor tool, so their cached
+  prefix is unchanged.
+- Cost: the first consultation in a conversation writes its whole context into Opus's cache
+  (about $0.35 for a fresh session, $1.60 at 200K tokens); later ones read it back for a few
+  cents plus about 1.5K output tokens. `cj-report` lists consultations as their own
+  `(advisor)` row, the status line counts them, and `cj-quality scan` reports
+  `+advisor` turns apart.
+
 ## Routing policy
 
 One Jev call per fresh user turn picks an exact model from the account's catalog. Jev sees the

@@ -128,6 +128,7 @@ export function readTurns(file, { prior = 30 } = {}) {
           reply: "",
           next: null,
           hint: null,
+          advice: 0,
         };
         turns.push(turn);
       }
@@ -141,6 +142,7 @@ export function readTurns(file, { prior = 30 } = {}) {
       for (const b of Array.isArray(m.content) ? m.content : []) {
         if (b.type === "tool_use") turn.tools.push({ name: b.name, input: clip(JSON.stringify(b.input ?? {}), 300) });
         else if (b.type === "text" && b.text.trim()) turn.reply = clip(b.text.trim(), 3000);
+        else if (b.type === "advisor_tool_result") turn.advice++;
       }
     }
     if (turn && m.role === "user" && Array.isArray(m.content)) {

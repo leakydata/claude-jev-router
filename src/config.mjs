@@ -112,6 +112,30 @@ export const THRESHOLDS = {
   delegateProbability: 0.6,
 };
 
+/**
+ * The API's advisor tool: the executor model consults a stronger one at hard points within a
+ * response. Turns on Sonnet get Opus to consult, which covers the turns that need Opus but
+ * read like ordinary work. Opus 5.5's advice comes back encrypted and is replayed, unread.
+ * Off unless CJ_ADVISOR=1 while it is evaluated.
+ */
+export const ADVISOR = {
+  enabled: () => process.env.CJ_ADVISOR === "1",
+  tiers: ["sonnet"],
+  model: "claude-opus-5-5",
+  beta: "advisor-tool-2026-03-01",
+  maxUses: 3,
+  // Without this the executor almost never consults (0 of 3 trial tasks, one of them a
+  // concurrency fix). It goes in a system block of its own, the same on every advised request.
+  note:
+    "An advisor tool is available: a stronger model that reads this whole conversation and " +
+    "replies with guidance. Call it before your first edit, or before your answer when nothing " +
+    "will be edited, whenever the task involves any of: concurrency or locking, security, " +
+    "data loss or migrations, a design or architecture choice, numerical or date edge cases, a " +
+    "change spanning several files, or a previous attempt that failed. Call it again before " +
+    "you report a long multi-step task as finished. Skip it for routine edits, lookups, and " +
+    "simple questions.",
+};
+
 export const CONTEXT_WINDOW_TOKENS = 1000000;
 
 /**
