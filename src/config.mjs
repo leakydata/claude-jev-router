@@ -4,16 +4,37 @@ import { choice, score } from "@typesafe-ai/sdk";
 /**
  * Model tiers, cheapest first. `id` is what goes into the API request body; `family` is the
  * substring used to recognise whatever model Claude Code asked for, which may be an older
- * version within the same tier such as `claude-sonnet-4-6`. The capability flags come from
- * the Agent SDK's model catalogue: Haiku supports neither adaptive thinking nor effort, so
- * those fields have to be stripped when routing down to it.
+ * version within the same tier such as `claude-sonnet-4-6`. The capability flags describe the
+ * current model of each tier, and every one of those accepts adaptive thinking and `effort` —
+ * including Haiku, as of Haiku 5.5. Capability is not uniform within a tier though, so what
+ * `applyTier` actually checks is `supportsModernThinking` on the exact model id.
  */
 export const TIERS = [
-  { name: "haiku", id: "claude-haiku-4-5-20251001", family: "haiku", thinking: false, effort: false },
-  { name: "sonnet", id: "claude-sonnet-5", family: "sonnet", thinking: true, effort: true },
-  { name: "opus", id: "claude-opus-5", family: "opus", thinking: true, effort: true },
+  { name: "haiku", id: "claude-haiku-5-5", family: "haiku", thinking: true, effort: true },
+  { name: "sonnet", id: "claude-sonnet-5-5", family: "sonnet", thinking: true, effort: true },
+  { name: "opus", id: "claude-opus-5-5", family: "opus", thinking: true, effort: true },
   { name: "fable", id: "claude-fable-5-1", family: "fable", thinking: true, effort: true },
 ];
+
+/**
+ * Models that take neither `thinking: {type:"adaptive"}` nor `output_config.effort`. Adaptive
+ * thinking arrived with 4.6, so everything older (4.5 and below, plus the legacy `claude-3-*`
+ * names) still wants `thinking.budget_tokens`, and `effort` errors on most of it. The account
+ * catalogue can still offer an old model within a tier, so routing to one has to strip both.
+ * Effort is stripped on Opus 4.5 too, which does accept it; losing that is harmless.
+ */
+const VERSIONED = /^claude-(?:haiku|sonnet|opus)-(\d+)(?:-(\d{1,2}))?(?!\d)/;
+
+/** Whether an exact model id accepts adaptive thinking and `output_config.effort`. */
+export const supportsModernThinking = (id) => {
+  if (typeof id !== "string") return true;
+  if (/^claude-[0-3]/.test(id)) return false; // claude-3-5-sonnet and friends
+  const m = VERSIONED.exec(id);
+  if (!m) return true; // unrecognised shape: assume current rather than strip fields
+  const major = Number(m[1]);
+  const minor = m[2] === undefined ? 0 : Number(m[2]);
+  return major > 4 || (major === 4 && minor >= 6);
+};
 
 export const TIER_NAMES = TIERS.map((t) => t.name);
 

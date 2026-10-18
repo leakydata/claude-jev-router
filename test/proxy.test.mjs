@@ -21,7 +21,7 @@ test("only the sentinel model is routed", () => {
 test("the sentinel is not mistaken for a real tier", () => {
   assert.equal(tierOf("jev-router"), null);
 });
-import { tierOf, isAuto } from "../src/config.mjs";
+import { tierOf, isAuto, supportsModernThinking } from "../src/config.mjs";
 import { writeDecision, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
 import { mkdirSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -150,7 +150,7 @@ test("a routed request without metadata is recorded under the conversation key",
     req.on("data", () => {});
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
-      res.end('{"id":"msg_1","type":"message","model":"claude-sonnet-5"}');
+      res.end('{"id":"msg_1","type":"message","model":"claude-sonnet-5-5"}');
     });
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
@@ -158,7 +158,7 @@ test("a routed request without metadata is recorded under the conversation key",
 
   const { port, close } = await startProxy({
     upstreamURL: `http://127.0.0.1:${upstream.address().port}`,
-    route: async () => ({ choice: "claude-sonnet-5", confidence: 0.77, ms: 1 }),
+    route: async () => ({ choice: "claude-sonnet-5-5", confidence: 0.77, ms: 1 }),
   });
   t.after(close);
 
@@ -265,27 +265,60 @@ test("a prompt that is only a system reminder is not a turn", () => {
   assert.equal(newTurnPrompt(body), null);
 });
 
-test("routing to haiku strips fields haiku cannot accept", () => {
+const LEGACY_HAIKU = "claude-haiku-4-5-20251001";
+
+test("routing to a legacy haiku strips fields it cannot accept", () => {
   const body = {
     model: "claude-sonnet-4-6",
     thinking: { type: "adaptive" },
     output_config: { effort: "medium" },
     context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
   };
-  applyTier(body, "haiku");
-  assert.equal(body.model, "claude-haiku-4-5-20251001");
+  applyTier(body, "haiku", LEGACY_HAIKU);
+  assert.equal(body.model, LEGACY_HAIKU);
   assert.equal(body.thinking, undefined);
   assert.equal(body.output_config, undefined);
   assert.equal(body.context_management, undefined);
 });
 
-test("routing to haiku keeps context-management strategies unrelated to thinking", () => {
+test("routing to a legacy haiku keeps context-management strategies unrelated to thinking", () => {
   const body = {
     model: "claude-sonnet-4-6",
     context_management: { edits: [{ type: "clear_tool_uses_20250919" }, { type: "clear_thinking_20251015" }] },
   };
-  applyTier(body, "haiku");
+  applyTier(body, "haiku", LEGACY_HAIKU);
   assert.deepEqual(body.context_management, { edits: [{ type: "clear_tool_uses_20250919" }] });
+});
+
+test("routing to haiku 5.5 leaves thinking and effort intact", () => {
+  const body = {
+    model: "claude-opus-5-5",
+    thinking: { type: "adaptive" },
+    output_config: { effort: "medium" },
+    context_management: { edits: [{ type: "clear_thinking_20251015" }] },
+  };
+  applyTier(body, "haiku");
+  assert.equal(body.model, "claude-haiku-5-5");
+  assert.deepEqual(body.thinking, { type: "adaptive" });
+  assert.deepEqual(body.output_config, { effort: "medium" });
+  assert.deepEqual(body.context_management, { edits: [{ type: "clear_thinking_20251015" }] });
+});
+
+test("only the 4.5 generation and older lack adaptive thinking and effort", () => {
+  for (const id of ["claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-1", "claude-opus-4-20250514", "claude-3-5-sonnet-20241022"]) {
+    assert.equal(supportsModernThinking(id), false, id);
+  }
+  for (const id of ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-fable-5-1"]) {
+    assert.equal(supportsModernThinking(id), true, id);
+  }
+});
+
+test("the account catalogue is ordered newest first whatever order the API returned", () => {
+  const out = claudeModels([
+    { id: "claude-haiku-4-5", created_at: "2025-10-01T00:00:00Z" },
+    { id: "claude-haiku-5-5", created_at: "2026-09-01T00:00:00Z" },
+  ]);
+  assert.deepEqual(out.map((m) => m.id), ["claude-haiku-5-5", "claude-haiku-4-5"]);
 });
 
 test("routing to opus leaves thinking and effort intact", () => {
@@ -295,7 +328,7 @@ test("routing to opus leaves thinking and effort intact", () => {
     output_config: { effort: "medium" },
   };
   applyTier(body, "opus");
-  assert.equal(body.model, "claude-opus-5");
+  assert.equal(body.model, "claude-opus-5-5");
   assert.deepEqual(body.thinking, { type: "adaptive" });
   assert.deepEqual(body.output_config, { effort: "medium" });
 });

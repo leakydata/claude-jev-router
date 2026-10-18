@@ -10,6 +10,7 @@ import {
   tierSpec,
   isAuto,
   shouldUseExactModel,
+  supportsModernThinking,
 } from "./config.mjs";
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
@@ -80,7 +81,10 @@ export function applyTier(body, tierName, model = idOf(tierName)) {
   const tier = tierSpec(tierName);
   if (!tier) return body;
   body.model = model;
-  if (!tier.thinking) {
+  // Capability belongs to the exact model, not the tier: the catalogue can serve an older
+  // model within a tier that still rejects these fields.
+  const modern = supportsModernThinking(model);
+  if (!tier.thinking || !modern) {
     delete body.thinking;
     // A context-management strategy that prunes thinking blocks is itself rejected once
     // thinking is gone, so it has to go with it.
@@ -90,7 +94,7 @@ export function applyTier(body, tierName, model = idOf(tierName)) {
       if (body.context_management.edits.length === 0) delete body.context_management;
     }
   }
-  if (!tier.effort && body.output_config) {
+  if ((!tier.effort || !modern) && body.output_config) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
@@ -101,6 +105,9 @@ export function applyTier(body, tierName, model = idOf(tierName)) {
 export function claudeModels(catalog = []) {
   const models = catalog
     .filter((model) => tierOf(model?.id))
+    // The comment above promises newest-first, and `modelForTier` takes the first match in
+    // each tier, so the order has to be enforced rather than inherited from the API response.
+    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
     .map((model) => ({
       id: model.id,
       tier: tierOf(model.id),
