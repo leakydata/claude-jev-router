@@ -261,6 +261,13 @@ export function conversationKey(body) {
   return createHash("sha1").update(`${session}|${text}`).digest("hex").slice(0, 12);
 }
 
+/** Whether a conversation opens with Claude Code's compaction summary. */
+export function isContinuation(body) {
+  const content = body?.messages?.[0]?.content;
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((b) => b.text ?? "").join("") : "";
+  return text.includes("This session is being continued from a previous conversation");
+}
+
 const DECOMPRESS = {
   gzip: zlib.createGunzip,
   "x-gzip": zlib.createGunzip,
@@ -485,8 +492,14 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           const key = conversationKey(body);
           const agentTurn = Array.isArray(body.tools) && body.tools.length > 0;
           // The first agent conversation in a session is the main one. Sub-agents run through
-          // the same endpoint, each with its own opening message and so its own key.
-          if (session && agentTurn && !mains.has(session)) mains.set(session, key);
+          // the same endpoint, each with its own opening message and so its own key. Compaction
+          // replaces the main conversation's opening message with a summary, which changes its
+          // key, so a conversation that opens with one takes over as main. Token counts are
+          // not conversations and never claim it.
+          const counting = /^\/v1\/messages\/count_tokens/.test(req.url ?? "");
+          if (session && agentTurn && !counting && (!mains.has(session) || isContinuation(body))) {
+            mains.set(session, key);
+          }
           const isMain = !session || mains.get(session) === key;
           usageKey = session || key;
 

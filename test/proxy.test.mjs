@@ -516,6 +516,7 @@ async function harness(t, route) {
   const send = (body) =>
     fetch(`${base}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
       .then((r) => r.json());
+  send.base = base;
   return { seen, send };
 }
 
@@ -567,6 +568,37 @@ test("picking a model by hand pauses routing for that session's sub-agents too",
   assert.equal(seen[1].model, "claude-opus-5-5");
   assert.equal(calls, 0);
   assert.equal(readStatus(s).manual, true);
+});
+
+test("after compaction the summarised conversation is still the main one", async (t) => {
+  const calls = [];
+  const { send } = await harness(t, async (args) => {
+    calls.push(args);
+    return { choice: "claude-sonnet-5-5", confidence: 0.9, ms: 1 };
+  });
+  const s = sid();
+  // A resumed session's first request can be the compaction of the old conversation.
+  await send(turn(s, "cj-auto", "the original first prompt"));
+  await send(turn(s, "cj-auto", "This session is being continued from a previous conversation that ran out of context."));
+  assert.equal(calls[1].subagent, false);
+  assert.equal(readStatus(s).model, "claude-sonnet-5-5", "the status line follows the main conversation");
+});
+
+test("a token count does not claim the main conversation", async (t) => {
+  const calls = [];
+  const { send } = await harness(t, async (args) => {
+    calls.push(args);
+    return { choice: "claude-sonnet-5-5", confidence: 0.9, ms: 1 };
+  });
+  const s = sid();
+  const base = send.base;
+  await fetch(`${base}/v1/messages/count_tokens`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(turn(s, "cj-auto", "foo")),
+  });
+  await send(turn(s, "cj-auto", "main task"));
+  assert.equal(calls.at(-1).subagent, false);
 });
 
 test("a sub-agent's own model choice does not flip the status line to manual", async (t) => {
