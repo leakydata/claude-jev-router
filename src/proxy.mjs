@@ -2,10 +2,12 @@ import http from "node:http";
 import https from "node:https";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import zlib from "node:zlib";
 import {
   TIERS,
   tierOf,
   idOf,
+  rankOf,
   availableTiers,
   tierSpec,
   isAuto,
@@ -15,7 +17,8 @@ import {
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
 import { log } from "./log.mjs";
-import { writeDecision, writeStatus } from "./status.mjs";
+import { costOf } from "./pricing.mjs";
+import { writeDecision, writeStatus, writeSubagentDecision, writeUsage } from "./status.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const debug = (line) => process.env.JEV_DEBUG && log(line);
@@ -258,6 +261,72 @@ export function conversationKey(body) {
   return createHash("sha1").update(`${session}|${text}`).digest("hex").slice(0, 12);
 }
 
+const DECOMPRESS = {
+  gzip: zlib.createGunzip,
+  "x-gzip": zlib.createGunzip,
+  deflate: zlib.createInflate,
+  br: zlib.createBrotliDecompress,
+  zstd: zlib.createZstdDecompress,
+};
+
+/**
+ * Reads the served model and token usage out of a Messages API response without touching
+ * what the client receives: the response is copied through a decompressor of its own. Handles
+ * a server-sent-event stream (`message_start`, then cumulative `message_delta` usage) and a
+ * plain JSON body. Calls `onUsage(model, usage)` once, when the response ends.
+ */
+export function readResponseUsage(stream, onUsage) {
+  const encoding = String(stream.headers?.["content-encoding"] ?? "").toLowerCase();
+  let text = stream;
+  if (encoding && encoding !== "identity") {
+    const make = DECOMPRESS[encoding];
+    if (!make) return;
+    text = stream.pipe(make());
+    text.on("error", () => {});
+  }
+  let model = null;
+  let usage = null;
+  let sse = false;
+  let pending = "";
+  const whole = [];
+  const onLine = (line) => {
+    if (!line.startsWith("data:")) return;
+    sse = true;
+    try {
+      const event = JSON.parse(line.slice(5));
+      if (event.type === "message_start") {
+        model = event.message?.model ?? model;
+        usage = { ...event.message?.usage };
+      } else if (event.type === "message_delta" && event.usage) {
+        usage = { ...usage, ...event.usage };
+      }
+    } catch {
+      // A partial or non-JSON line; usage is best effort.
+    }
+  };
+  text.on("data", (chunk) => {
+    const s = chunk.toString("utf8");
+    if (!sse && whole.length < 64) whole.push(s);
+    pending += s;
+    const lines = pending.split("\n");
+    pending = lines.pop();
+    lines.forEach(onLine);
+  });
+  text.on("end", () => {
+    onLine(pending);
+    if (!sse) {
+      try {
+        const body = JSON.parse(whole.join(""));
+        model = body.model;
+        usage = body.usage;
+      } catch {
+        return;
+      }
+    }
+    if (model && usage) onUsage(model, usage);
+  });
+}
+
 /**
  * Records the tier Claude Code is asking for and reports whether the user has taken manual
  * control. The first tier seen in a conversation is the baseline; any later change means the
@@ -285,6 +354,114 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     return s;
   };
 
+  // Per session: the main conversation's key, whether the user has picked a model by hand,
+  // and running usage totals.
+  const mains = new Map();
+  const manual = new Set();
+  const totals = new Map();
+
+  /**
+   * Picks the model for one request and rewrites the body to it. `ceiling` is the concrete
+   * model a sub-agent asked for; routing never goes above its tier.
+   */
+  async function routeRequest(body, { key, session, isMain, ceiling }) {
+    const state = stateFor(key);
+    const ceilingTier = ceiling ? tierOf(ceiling) : null;
+    // What the prompt cache was built on, which is what a downgrade would discard. A new
+    // sub-agent starts from the model it asked for.
+    const current = state.tier ?? ceilingTier ?? "opus";
+    const prompt = newTurnPrompt(body);
+    const explaining = prompt?.includes("<cj-explain>");
+    let fresh = null;
+    if (prompt && !explaining) {
+      const models = claudeModels([...catalog.values()]).filter((model) =>
+        availableTiers().includes(model.tier),
+      );
+      const candidates = ceilingTier
+        ? models.filter((model) => rankOf(model.tier) <= rankOf(ceilingTier))
+        : models;
+      const available = [...new Set(candidates.map((model) => model.tier))];
+      const currentModel = state.model ?? ceiling ?? modelForTier(candidates, current);
+      const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
+      const history = recentContext(body);
+      const jev = await route({
+        prompt,
+        current: currentModel,
+        contextTokens,
+        models: candidates,
+        history,
+        subagent: !isMain,
+      });
+      const chosen = candidates.find((model) => model.id === jev?.choice);
+      const tierAnswer = jev && { ...jev, choice: chosen?.tier };
+      let { tier, reason } = decide({
+        prompt,
+        jev: tierAnswer,
+        current,
+        available,
+        contextTokens,
+      });
+      if (ceilingTier && rankOf(tier) > rankOf(ceilingTier)) {
+        tier = ceilingTier;
+        reason = `${reason}+ceiling`;
+      }
+      const model =
+        ceilingTier === tier
+          ? ceiling
+          : shouldUseExactModel(reason, chosen?.tier, tier)
+            ? chosen.id
+            : tier === current
+              ? currentModel
+              : modelForTier(candidates, tier);
+      state.tier = tier;
+      state.model = model;
+      fresh = {
+        prompt,
+        model,
+        requested: ceiling ?? null,
+        confidence: jev?.confidence ?? null,
+        metrics: jev?.metrics ?? null,
+        newTask: jev?.newTask ?? null,
+        contextTokens,
+        reason,
+        jev: jev ? { request: jev.request, response: jev.response } : null,
+      };
+      debug(
+        `${key}${isMain ? "" : " sub-agent"} ${jev ? `${jev.ms}ms p=${jev.confidence.toFixed(2)}` : "no-jev"} ` +
+          `${current} -> ${tier} (${reason}) ctx~${contextTokens} | ${prompt.slice(0, 60)}`,
+      );
+    }
+    // Every routed request is rewritten, including follow-ups that reuse the turn's model:
+    // the sentinel is not a real model, and a sub-agent must stay on the model its turn chose.
+    const tier = state.tier ?? current;
+    const model = state.model ?? ceiling ?? idOf(tier);
+    debug(`${key} rewrite ${body.model} -> ${model}`);
+    applyTier(body, tier, model);
+    // Publish what went out. Claude Code's UI shows the row you picked, not the model it
+    // resolved to, so the status line is the only place this is visible. `claude -p` omits
+    // metadata on the first request of a session, so the decision is filed under the
+    // conversation key, which is what `debug` prints and what `cj-explain` accepts.
+    if (fresh) {
+      const decision = { tier, ...fresh, at: Date.now() };
+      if (isMain) writeDecision(session || key, decision);
+      else writeSubagentDecision(session, decision);
+    }
+  }
+
+  /** Adds one response's usage to its session's totals and publishes them. */
+  function recordUsage(sessionKey, model, usage) {
+    const cost = costOf(model, usage);
+    if (!cost) return;
+    const t = totals.get(sessionKey) ?? { requests: 0, dollars: 0, tokens: {}, byModel: {} };
+    t.requests++;
+    t.dollars += cost.total;
+    for (const [k, v] of Object.entries(cost.tokens)) t.tokens[k] = (t.tokens[k] ?? 0) + v;
+    t.byModel[model] = (t.byModel[model] ?? 0) + cost.total;
+    t.at = Date.now();
+    totals.set(sessionKey, t);
+    writeUsage(sessionKey, t);
+  }
+
   const server = http.createServer((req, res) => {
     // Claude Code probes the base URL before its first request.
     if (req.method === "HEAD") return res.writeHead(200).end();
@@ -293,6 +470,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     req.on("data", (c) => chunks.push(c));
     req.on("end", async () => {
       let out = Buffer.concat(chunks);
+      let usageKey = null;
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -303,79 +481,32 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           }
           body.tools?.forEach((t) => sanitizeSchema(t.input_schema));
 
-          // Anything that is not the sentinel is a model the user chose, and an explicit
-          // choice beats the router. That also covers Claude Code's own cheap Haiku calls
-          // for titles and summaries, which must never be pinned up to the session's tier.
-          if (!isAuto(body.model)) {
-            debug(`passthrough, user selected ${body.model}`);
-            // Only a real agent turn reflects the user's choice. Claude Code's own auxiliary
-            // calls carry no tools and must not flip the status line to manual mid-session.
-            if (Array.isArray(body.tools)) {
-              writeStatus(sessionOf(body), { manual: true, at: Date.now() });
-            }
+          const session = sessionOf(body);
+          const key = conversationKey(body);
+          const agentTurn = Array.isArray(body.tools) && body.tools.length > 0;
+          // The first agent conversation in a session is the main one. Sub-agents run through
+          // the same endpoint, each with its own opening message and so its own key.
+          if (session && agentTurn && !mains.has(session)) mains.set(session, key);
+          const isMain = !session || mains.get(session) === key;
+          usageKey = session || key;
+
+          if (isAuto(body.model)) {
+            if (isMain) manual.delete(session);
+            await routeRequest(body, { key, session, isMain });
+          } else if (!isMain && agentTurn && tierOf(body.model) && !manual.has(session)) {
+            // A sub-agent asking for a concrete model: Claude or the agent's author picked it
+            // as the strongest the task needs, so Jev may route the task down from it, never up.
+            await routeRequest(body, { key, session, isMain, ceiling: body.model });
           } else {
-            const key = conversationKey(body);
-            const state = stateFor(key);
-            // What the prompt cache was built on, which is what a downgrade would discard.
-            const current = state.tier ?? "opus";
-            const prompt = newTurnPrompt(body);
-            const explaining = prompt?.includes("<cj-explain>");
-            let fresh = null;
-            if (prompt && !explaining) {
-              const models = claudeModels([...catalog.values()]).filter((model) =>
-                availableTiers().includes(model.tier),
-              );
-              const available = [...new Set(models.map((model) => model.tier))];
-              const currentModel = state.model ?? modelForTier(models, current);
-              const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
-              const history = recentContext(body);
-              const jev = await route({ prompt, current: currentModel, contextTokens, models, history });
-              const chosen = models.find((model) => model.id === jev?.choice);
-              const tierAnswer = jev && { ...jev, choice: chosen?.tier };
-              const { tier, reason } = decide({
-                prompt,
-                jev: tierAnswer,
-                current,
-                available,
-                contextTokens,
-              });
-              const model =
-                shouldUseExactModel(reason, chosen?.tier, tier)
-                  ? chosen.id
-                  : tier === current
-                    ? currentModel
-                    : modelForTier(models, tier);
-              state.tier = tier;
-              state.model = model;
-              fresh = {
-                prompt,
-                model,
-                confidence: jev?.confidence ?? null,
-                metrics: jev?.metrics ?? null,
-                newTask: jev?.newTask ?? null,
-                contextTokens,
-                reason,
-                jev: jev ? { request: jev.request, response: jev.response } : null,
-              };
-              debug(
-                `${key} ${jev ? `${jev.ms}ms p=${jev.confidence.toFixed(2)}` : "no-jev"} ` +
-                  `${current} -> ${tier} (${reason}) ctx~${contextTokens} | ${prompt.slice(0, 60)}`,
-              );
-            }
-            // The sentinel is not a real model, so every routed request must be rewritten,
-            // including follow-ups that reuse the tier chosen for the turn.
-            const tier = state.tier ?? current;
-            const model = state.model ?? idOf(tier);
-            debug(`${key} rewrite ${body.model} -> ${model}`);
-            applyTier(body, tier, model);
-            // Publish what went out. Claude Code's UI shows the row you picked, not the tier
-            // it resolved to, so the status line is the only place this is visible.
-            // `claude -p` omits metadata on the first request of a session, so there is no
-            // session id to file the decision under and it would be dropped. The conversation
-            // key is stable for the same conversation and is already what `debug` prints, so
-            // it is the identifier a user can pass to `cj-explain` for a print-mode run.
-            if (fresh && !explaining) {
-              writeDecision(sessionOf(body) || key, { tier, ...fresh, at: Date.now() });
+            // Anything else is a model the user chose, and an explicit choice beats the
+            // router. That also covers Claude Code's own cheap calls for titles and
+            // summaries, which carry no tools and must never be pinned to the session's tier.
+            debug(`passthrough, ${body.model} requested`);
+            // Only the main conversation reflects the user's choice, and it pauses routing for
+            // that session's sub-agents too.
+            if (isMain && agentTurn) {
+              manual.add(session);
+              writeStatus(session, { manual: true, at: Date.now() });
             }
           }
           out = Buffer.from(JSON.stringify(body));
@@ -424,6 +555,9 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             return;
           }
           res.writeHead(up.statusCode, up.headers);
+          if (usageKey && up.statusCode === 200 && /^\/v1\/messages(?:\?|$)/.test(req.url ?? "")) {
+            readResponseUsage(up, (model, usage) => recordUsage(usageKey, model, usage));
+          }
           // Report the model the API itself says it used, so the routing can be confirmed
           // from the wire rather than trusted from our own decision log. Claude Code's UI
           // always shows the model it asked for, never the one we rewrote to.

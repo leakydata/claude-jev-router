@@ -27,12 +27,18 @@ function getClient() {
  * The Jev request for one routing decision. `history` is the recent conversation from
  * `recentContext`, so a terse follow-up is judged by the work it continues.
  */
-export function jevRequest({ prompt, current, contextTokens, models, history }) {
+export function jevRequest({ prompt, current, contextTokens, models, history, subagent }) {
   return {
     state: {
       request: prompt,
       ...(history && { conversation_before_request: history }),
-      session: { current_model: current, context_tokens: contextTokens },
+      session: {
+        current_model: current,
+        context_tokens: contextTokens,
+        ...(subagent && {
+          role: "Sub-agent: a self-contained task delegated by the main agent, which only gets the result back.",
+        }),
+      },
       environment: { available_models: models.map((model) => model.id) },
     },
     questions: { ...QUESTIONS, model: questionForModels(models) },
@@ -45,12 +51,12 @@ export function jevRequest({ prompt, current, contextTokens, models, history }) 
  *
  * @returns {Promise<?{choice: string, confidence: number, probabilities: object, metrics: object, ms: number}>}
  */
-export async function askJev({ prompt, current, contextTokens, models, history }) {
+export async function askJev({ prompt, current, contextTokens, models, history, subagent }) {
   if (!models?.length) return null;
   const started = Date.now();
   const abort = new AbortController();
   const deadline = setTimeout(() => abort.abort(), THRESHOLDS.jevDeadlineMs);
-  const request = jevRequest({ prompt, current, contextTokens, models, history });
+  const request = jevRequest({ prompt, current, contextTokens, models, history, subagent });
   try {
     const result = await getClient().systemOne(request, { signal: abort.signal });
     const { model: answer, task_complexity, reasoning_required, tool_complexity } = result.answers;

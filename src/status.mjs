@@ -43,6 +43,21 @@ export function writeDecision(sessionId, decision) {
   writeStatus(sessionId, { ...decision, history });
 }
 
+/**
+ * Record a sub-agent's routing decision in the session's history without replacing the main
+ * conversation's latest decision, which is what the status line shows.
+ */
+export function writeSubagentDecision(sessionId, decision) {
+  const previous = readStatus(sessionId) ?? {};
+  const history = [...(previous.history ?? []), { ...decision, subagent: true }].slice(-20);
+  writeStatus(sessionId, { ...previous, history });
+}
+
+/** Running token and cost totals for a session, kept apart from routing decisions. */
+export const writeUsage = (sessionId, usage) => writeStatus(`${sessionId}-usage`, usage);
+
+export const readUsage = (sessionId) => (sessionId ? readStatus(`${sessionId}-usage`) : null);
+
 /** Latest routing decision for a session, or null if none has been made yet. */
 export function readStatus(sessionId) {
   try {

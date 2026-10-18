@@ -10,7 +10,10 @@ import {
   sessionOf,
   startProxy,
   recentContext,
+  readResponseUsage,
 } from "../src/proxy.mjs";
+import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { jevRequest } from "../src/router.mjs";
 import { questionForModels } from "../src/config.mjs";
 
@@ -25,7 +28,7 @@ test("the sentinel is not mistaken for a real tier", () => {
   assert.equal(tierOf("cj-auto"), null);
 });
 import { tierOf, isAuto, supportsModernThinking } from "../src/config.mjs";
-import { writeDecision, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
+import { writeDecision, writeStatus, readStatus, readUsage, pruneStale, STATUS_DIR } from "../src/status.mjs";
 import { mkdirSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -484,4 +487,126 @@ test("trailing system messages do not hide the earlier conversation", () => {
   });
   assert.deepEqual(ctx.earlier_user_requests, ["investigate the race"]);
   assert.equal(ctx.last_assistant_reply, "Found it; shall I fix it?");
+});
+
+/** A fake Anthropic upstream that records request bodies, plus a proxy in front of it. */
+async function harness(t, route) {
+  const seen = [];
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      if (req.url.startsWith("/v1/models")) {
+        return res.end(JSON.stringify({ data: [
+          { id: "claude-haiku-5-5" }, { id: "claude-sonnet-5-5" }, { id: "claude-opus-5-5" },
+        ] }));
+      }
+      const body = JSON.parse(Buffer.concat(chunks));
+      seen.push(body);
+      res.end(JSON.stringify({ id: "m", type: "message", model: body.model, usage: { input_tokens: 10, output_tokens: 5 } }));
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+  const proxy = await startProxy({ upstreamURL: `http://127.0.0.1:${upstream.address().port}`, route });
+  t.after(proxy.close);
+  const base = `http://127.0.0.1:${proxy.port}`;
+  await fetch(`${base}/v1/models`).then((r) => r.json());
+  const send = (body) =>
+    fetch(`${base}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then((r) => r.json());
+  return { seen, send };
+}
+
+const sid = () => `sub-${process.pid}-${Math.random().toString(36).slice(2)}`;
+const turn = (session, model, text) => ({
+  model,
+  metadata: { user_id: JSON.stringify({ session_id: session }) },
+  tools: [{ name: "Bash" }],
+  messages: [{ role: "user", content: text }],
+});
+
+test("a sub-agent asking for a concrete model can be routed down from it", async (t) => {
+  const calls = [];
+  const { seen, send } = await harness(t, async (args) => {
+    calls.push(args);
+    return { choice: args.subagent ? "claude-haiku-5-5" : "claude-opus-5-5", confidence: 0.95, ms: 1 };
+  });
+  const s = sid();
+  await send(turn(s, "cj-auto", "main task"));
+  await send(turn(s, "claude-opus-5-5", "search the repo for where retries are configured"));
+  assert.equal(seen[1].model, "claude-haiku-5-5");
+  assert.equal(calls[1].subagent, true);
+  assert.equal(readStatus(s).model, "claude-opus-5-5", "the main conversation's status is untouched");
+  assert.equal(readStatus(s).history.at(-1).subagent, true);
+});
+
+test("a sub-agent is never routed above the model it asked for", async (t) => {
+  const calls = [];
+  const { seen, send } = await harness(t, async (args) => {
+    calls.push(args);
+    return { choice: "claude-opus-5-5", confidence: 0.99, ms: 1 };
+  });
+  const s = sid();
+  await send(turn(s, "cj-auto", "main task"));
+  await send(turn(s, "claude-haiku-5-5", "list the files in src"));
+  assert.equal(seen[1].model, "claude-haiku-5-5");
+  assert.deepEqual(calls[1].models.map((m) => m.id), ["claude-haiku-5-5"], "only models up to the ceiling are offered");
+});
+
+test("picking a model by hand pauses routing for that session's sub-agents too", async (t) => {
+  let calls = 0;
+  const { seen, send } = await harness(t, async () => {
+    calls++;
+    return { choice: "claude-haiku-5-5", confidence: 0.99, ms: 1 };
+  });
+  const s = sid();
+  await send(turn(s, "claude-opus-5-5", "main task on a model the user picked"));
+  await send(turn(s, "claude-opus-5-5", "a sub-agent task"));
+  assert.equal(seen[1].model, "claude-opus-5-5");
+  assert.equal(calls, 0);
+  assert.equal(readStatus(s).manual, true);
+});
+
+test("a sub-agent's own model choice does not flip the status line to manual", async (t) => {
+  const { send } = await harness(t, async () => ({ choice: "claude-sonnet-5-5", confidence: 0.9, ms: 1 }));
+  const s = sid();
+  await send(turn(s, "cj-auto", "main task"));
+  await send({ ...turn(s, "claude-haiku-4-5", "aux"), tools: undefined });
+  await send(turn(s, "some-unknown-model", "a sub-agent on a model we cannot route"));
+  assert.notEqual(readStatus(s).manual, true);
+});
+
+const streamOf = (text, headers = {}) => Object.assign(Readable.from([text]), { headers });
+
+test("reads usage out of a gzipped event stream", async () => {
+  const sse = [
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":3,"cache_read_input_tokens":900}}}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":42}}\n\n',
+  ].join("");
+  const got = await new Promise((resolve) =>
+    readResponseUsage(streamOf(gzipSync(sse), { "content-encoding": "gzip" }), (model, usage) => resolve({ model, usage })),
+  );
+  assert.deepEqual(got, { model: "claude-haiku-5-5", usage: { input_tokens: 3, cache_read_input_tokens: 900, output_tokens: 42 } });
+});
+
+test("reads usage out of a plain JSON response", async () => {
+  const got = await new Promise((resolve) =>
+    readResponseUsage(streamOf(JSON.stringify({ model: "claude-opus-5-5", usage: { output_tokens: 7 } })), (model, usage) =>
+      resolve({ model, usage }),
+    ),
+  );
+  assert.deepEqual(got, { model: "claude-opus-5-5", usage: { output_tokens: 7 } });
+});
+
+test("the proxy totals each session's real usage and cost", async (t) => {
+  const { send } = await harness(t, async () => ({ choice: "claude-opus-5-5", confidence: 0.9, ms: 1 }));
+  const s = sid();
+  await send(turn(s, "cj-auto", "main task"));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const usage = readUsage(s);
+  assert.equal(usage.requests, 1);
+  assert.deepEqual(usage.tokens, { cache_read: 0, cache_write: 0, input: 10, output: 5 });
+  assert.ok(Math.abs(usage.dollars - (10 * 4 + 5 * 20) / 1e6) < 1e-12);
 });

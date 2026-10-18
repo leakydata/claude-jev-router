@@ -12,7 +12,8 @@
   "bugs": "https://github.com/leakydata/claude-jev-router/issues",
   "bin": {
     "cj": "bin/cj.mjs",
-    "cj-explain": "bin/cj-explain.mjs"
+    "cj-explain": "bin/cj-explain.mjs",
+    "cj-report": "bin/cj-report.mjs"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\""

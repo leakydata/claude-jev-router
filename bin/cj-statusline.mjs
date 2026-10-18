@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Status line for Claude Code. Claude Code pipes session JSON on stdin and renders whatever
 // this prints. See https://code.claude.com/docs/en/statusline
-import { readStatus } from "../src/status.mjs";
+import { readStatus, readUsage } from "../src/status.mjs";
 import { THRESHOLDS } from "../src/config.mjs";
 
 const DIM = "\x1b[2m";
@@ -22,6 +22,9 @@ try {
 const status = readStatus(input.session_id);
 const dir = (input.workspace?.current_dir ?? input.cwd ?? "").split(/[\\/]/).pop();
 const pct = Math.round(input.context_window?.used_percentage ?? 0);
+// Claude Code's own count of what is in the context now, so the hint below clears itself
+// once a /compact shrinks it. The estimate from the routing decision is the fallback.
+const contextNow = input.context_window?.total_input_tokens ?? status?.contextTokens ?? 0;
 
 let routed = `${DIM}jev: waiting for first prompt${RESET}`;
 if (status?.manual) {
@@ -43,10 +46,15 @@ if (status?.manual) {
   // the old context on every request, so point at the commands that drop it.
   if (
     status.newTask >= THRESHOLDS.newTaskProbability &&
-    status.contextTokens >= THRESHOLDS.newTaskMinContextTokens
+    contextNow >= THRESHOLDS.newTaskMinContextTokens
   ) {
     routed += ` ${DIM}· new task? /clear or /compact${RESET}`;
   }
 }
 
-process.stdout.write(`${routed} ${DIM}·${RESET} ${dir} ${DIM}· ${pct}% context${RESET}\n`);
+// The session's cost so far, at API list prices, from the usage the proxy saw on real
+// responses, sub-agents included. Claude Code's own estimate cannot price the sentinel.
+const usage = readUsage(input.session_id);
+const cost = usage ? ` ${DIM}· ≈$${usage.dollars.toFixed(2)}${RESET}` : "";
+
+process.stdout.write(`${routed} ${DIM}·${RESET} ${dir} ${DIM}· ${pct}% context${RESET}${cost}\n`);
