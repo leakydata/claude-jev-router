@@ -4,7 +4,7 @@ Automatic per-turn model routing for Claude Code. Jev sends simple work to Haiku
 work to Opus, while preserving Claude Code's native interface, tools, sessions, permissions,
 and authentication.
 
-`jev-claude` launches the real Claude Code CLI. Jev only chooses the model for a fresh user
+`claude-jev` launches the real Claude Code CLI. Jev only chooses the model for a fresh user
 turn, and the decision is shown in the status line.
 
 A Claude-only fork of [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
@@ -18,32 +18,32 @@ git clone https://github.com/leakydata/claude-jev-router.git
 cd claude-jev-router
 npm install
 npm install -g .
-echo "JEV_API_KEY=..." > ~/.jev-router.env
+echo "JEV_API_KEY=..." > ~/.claude-jev.env
 ```
 
 `npm install -g .` links the global commands to this checkout, so edits take effect at the
-next launch. Without it, run `node bin/jev-claude.mjs`.
+next launch. Without it, run `node bin/claude-jev.mjs`.
 
 Get a key from [TypeSafe](https://docs.typesafe.ai). Then launch from any repository:
 
 ```bash
-jev-claude
+claude-jev
 ```
 
 No Anthropic API key is required when Claude Code is already logged in with a subscription.
 Every CLI argument is forwarded:
 
 ```bash
-jev-claude --resume
-jev-claude -p "fix the failing test"
+claude-jev --resume
+claude-jev -p "fix the failing test"
 ```
 
 ## Claude Code interface
 
-![Jev Router in the Claude Code model picker](docs/model-picker.png)
+![Claude Jev in the Claude Code model picker](docs/model-picker.png)
 
-`jev-claude` launches Claude Code with **Jev Router** selected in `/model`. Selecting another
-model pauses routing; selecting **Jev Router** resumes it.
+`claude-jev` launches Claude Code with **Claude Jev** selected in `/model`. Selecting another
+model pauses routing; selecting **Claude Jev** resumes it.
 
 The injected status line shows the model used for the last turn:
 
@@ -56,11 +56,11 @@ Claude Code otherwise remains unchanged, including its keybindings, tools, permi
 `/compact`, `/resume`, and session handling. An existing custom `statusLine` is preserved;
 set `JEV_NO_STATUSLINE=1` to disable Jev's status line.
 
-The bundled `/jev-explain` skill shows the factors behind the last routing decision:
+The bundled `/claude-jev-explain` skill shows the factors behind the last routing decision:
 
 ```text
 ┌─────────────────────────────────────────┐
-│ Jev Router                              │
+│ Claude Jev                              │
 │                                         │
 │ Jev request                             │
 │ Prompt: explain the router              │
@@ -86,19 +86,19 @@ response saved when routing occurred. Invoking it does not ask Jev to score the 
 
 ### Explanation data location
 
-`jev-claude` keeps up to 20 recent routing exchanges in one JSON file per Claude Code session
+`claude-jev` keeps up to 20 recent routing exchanges in one JSON file per Claude Code session
 under Node.js's operating-system temporary directory:
 
 | Platform | Default location |
 | --- | --- |
-| Windows | `%TEMP%\jev-claude\<session-id>.json` |
-| macOS | `$TMPDIR/jev-claude/<session-id>.json` (normally under `/var/folders/.../T`) |
-| Ubuntu/Linux | `${TMPDIR:-/tmp}/jev-claude/<session-id>.json` |
+| Windows | `%TEMP%\claude-jev\<session-id>.json` |
+| macOS | `$TMPDIR/claude-jev/<session-id>.json` (normally under `/var/folders/.../T`) |
+| Ubuntu/Linux | `${TMPDIR:-/tmp}/claude-jev/<session-id>.json` |
 
 Print the exact directory selected on the current machine with:
 
 ```bash
-node -e "console.log(require('node:path').join(require('node:os').tmpdir(), 'jev-claude'))"
+node -e "console.log(require('node:path').join(require('node:os').tmpdir(), 'claude-jev'))"
 ```
 
 Filenames use Claude Code's session UUID. These temporary files contain prompt text and Jev's
@@ -106,22 +106,22 @@ exact request and response, so they are readable only by you (the directory is c
 mode 700 and each file with 600). Files not updated for 7 days are deleted automatically, and
 the operating system may also remove them during normal temporary-file cleanup.
 
-> Choosing a model with `Enter` can save it as Claude Code's default. `jev-claude` restores
-> the previous default on exit so `jev-router` cannot break plain `claude`.
+> Choosing a model with `Enter` can save it as Claude Code's default. `claude-jev` restores
+> the previous default on exit so the `claude-jev` model id cannot break plain `claude`.
 
 ## How it works
 
-`jev-claude` starts a loopback proxy, points Claude Code at it with `ANTHROPIC_BASE_URL`, and
+`claude-jev` starts a loopback proxy, points Claude Code at it with `ANTHROPIC_BASE_URL`, and
 forwards Claude Code's existing authorization headers without reading, storing, or modifying
 them.
 
 ```text
-you -> Claude Code -> jev-claude proxy -> Anthropic
+you -> Claude Code -> claude-jev proxy -> Anthropic
                          |
                          +-> Jev: choose a model
 ```
 
-`jev-router` is the routing sentinel model id. Any concrete model selected by the user passes
+`claude-jev` is the routing sentinel model id. Any concrete model selected by the user passes
 through unchanged.
 
 ## Routing policy
@@ -155,12 +155,12 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | --- | --- |
 | `JEV_API_KEY` | Enables routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_ALLOW_FABLE` | Enables the opt-in long tier. |
-| `JEV_DEBUG` | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. |
+| `JEV_DEBUG` | Logs decisions and rewrites to `~/.claude-jev.log` in interactive sessions. |
 | `JEV_DUMP` | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Disables the injected status line. |
 
 Existing environment variables have highest precedence, followed by `.env` in the launch
-directory, `~/.jev-router.env`, and the legacy `~/.jev-claude.env`.
+directory, then `~/.claude-jev.env`.
 
 Tier definitions, model facts, Jev's questions, confidence thresholds, and timeouts live in
 `src/config.mjs`. Jev chooses among the exact models in the signed-in account's catalog, so
@@ -183,7 +183,7 @@ echo "JEV_API_KEY=..." > .env
 
 npm test
 node test/live-routing.mjs
-node bin/jev-claude.mjs -p "what is 2+2?"
+node bin/claude-jev.mjs -p "what is 2+2?"
 ```
 
 The test suite covers policy, the request format, model rewriting, capability handling,

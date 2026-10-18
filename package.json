@@ -11,8 +11,8 @@
   "homepage": "https://github.com/leakydata/claude-jev-router#readme",
   "bugs": "https://github.com/leakydata/claude-jev-router/issues",
   "bin": {
-    "jev-claude": "bin/jev-claude.mjs",
-    "jev-explain": "bin/jev-explain.mjs"
+    "claude-jev": "bin/claude-jev.mjs",
+    "claude-jev-explain": "bin/claude-jev-explain.mjs"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\""

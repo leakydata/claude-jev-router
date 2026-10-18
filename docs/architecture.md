@@ -1,19 +1,19 @@
-# `jev-claude` architecture
+# `claude-jev` architecture
 
 ```mermaid
 flowchart TB
-  user([User]) --> command["`jev-claude`\nCLI wrapper"]
+  user([User]) --> command["`claude-jev`\nCLI wrapper"]
 
-  subgraph launcher["Launcher — bin/jev-claude.mjs"]
+  subgraph launcher["Launcher — bin/claude-jev.mjs"]
     direction TB
-    command --> env["Load environment\nprecedence: process env → .env → ~/.jev-router.env → ~/.jev-claude.env"]
+    command --> env["Load environment\nprecedence: process env → .env → ~/.claude-jev.env → ~/.claude-jev.env"]
     env --> find["Find `claude` executable on PATH"]
     env --> saved["Read existing ~/.claude/settings.json model\nfor later restoration"]
     find --> key{"JEV_API_KEY or\nTYPESAFE_API_KEY?"}
 
     key -- No --> direct["Spawn real Claude Code\nwithout routing"]
     key -- Yes --> proxyStart["Start ephemeral loopback proxy\n127.0.0.1:random-port"]
-    proxyStart --> launchEnv["Set ANTHROPIC_BASE_URL to proxy\nExpose `jev-router` as Jev Router in /model\nDefault to `jev-router` unless user set ANTHROPIC_MODEL"]
+    proxyStart --> launchEnv["Set ANTHROPIC_BASE_URL to proxy\nExpose `claude-jev` as Claude Jev in /model\nDefault to `claude-jev` unless user set ANTHROPIC_MODEL"]
     launchEnv --> statusCfg{"Status line allowed?"}
     statusCfg -- "No: JEV_NO_STATUSLINE or user statusLine" --> spawn
     statusCfg -- Yes --> statusCfgFile["Write temporary Claude status-line settings"] --> spawn
@@ -22,7 +22,7 @@ flowchart TB
 
   spawn --> claude["Claude Code\n(native UI, login, tools, sessions, permissions)"]
   claude --> picker{"/model selection"}
-  picker -- "Jev Router" --> auto["model: `jev-router`\n(routing sentinel)"]
+  picker -- "Claude Jev" --> auto["model: `claude-jev`\n(routing sentinel)"]
   picker -- "Concrete model" --> manual["model: user-selected model"]
   auto --> loopback
   manual --> loopback
@@ -33,7 +33,7 @@ flowchart TB
     loopback --> head{"HEAD probe?"}
     head -- Yes --> headOK["Return 200"]
     head -- No --> parse["Parse request body\nOptionally dump body with JEV_DUMP\nNormalize legacy MCP JSON schemas"]
-    parse --> mode{"model is `jev-router`?"}
+    parse --> mode{"model is `claude-jev`?"}
 
     mode -- No --> pass["Leave model unchanged\nFor agent requests, publish manual status"]
     mode -- Yes --> conversation["Build conversation key\nsession ID + first-message text\nKeep up to 50 independent states"]
@@ -44,7 +44,7 @@ flowchart TB
     jev --> policy
     policy --> saveTier["Pin chosen tier in conversation state"]
     saveTier --> pinned
-    pinned --> rewrite["Rewrite `jev-router` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
+    pinned --> rewrite["Rewrite `claude-jev` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
     rewrite --> publish["Write latest tier, confidence, and reason\nto per-session temp status file"]
     pass --> forward
     publish --> forward["Forward request to api.anthropic.com\nPreserve Claude Code authorization headers\nstream upstream response unchanged"]
@@ -59,9 +59,9 @@ flowchart TB
   forward --> anthropic["Anthropic API"]
   anthropic --> claude
 
-  subgraph visibility["Routing visibility — status.mjs + jev-statusline.mjs"]
+  subgraph visibility["Routing visibility — status.mjs + claude-jev-statusline.mjs"]
     direction TB
-    statusFile["Temp file: $TMPDIR/jev-claude/<session>.json"]
+    statusFile["Temp file: $TMPDIR/claude-jev/<session>.json"]
     statusLine["Claude Code status-line command\nReads session file and renders:\n⚡ tier + confidence, or ⏸ manual"]
     statusFile --> statusLine
   end
@@ -69,9 +69,9 @@ flowchart TB
   pass --> statusFile
   statusLine --> claude
 
-  spawn --> exit["On process exit: close proxy\nand restore saved model only if it is still `jev-router`"]
+  spawn --> exit["On process exit: close proxy\nand restore saved model only if it is still `claude-jev`"]
 ```
 
 The routing call happens only for the first request of a user turn. Tool-loop continuations reuse
 the pinned tier, avoiding repeated routing latency and model changes mid-task. A concrete model
-chosen in Claude Code bypasses routing until the user selects **Jev Router** again.
+chosen in Claude Code bypasses routing until the user selects **Claude Jev** again.

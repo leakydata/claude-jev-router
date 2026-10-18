@@ -4,7 +4,7 @@ import { startProxy } from "../src/proxy.mjs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-for (const f of [join(homedir(), ".jev-claude.env"), join(process.cwd(), ".env")]) {
+for (const f of [join(homedir(), ".claude-jev.env"), join(process.cwd(), ".env")]) {
   try {
     process.loadEnvFile(f);
   } catch {}

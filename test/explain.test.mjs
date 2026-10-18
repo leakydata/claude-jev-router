@@ -39,6 +39,6 @@ test("shows the concrete provider model when available", () => {
 });
 
 test("Claude skill pre-approves its read-only explanation command", () => {
-  const skill = readFileSync(new URL("../.claude/skills/jev-explain/SKILL.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../.claude/skills/claude-jev-explain/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /^allowed-tools: Bash\(node \*\)$/m);
 });

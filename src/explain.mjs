@@ -22,15 +22,15 @@ const decision = (reason = "") => {
 };
 
 export function formatExplanation(status) {
-  if (!status) return "Jev Router: no routing decision has been recorded for this session.";
-  if (status.manual) return "Jev Router: routing is paused because you selected a model manually.";
+  if (!status) return "Claude Jev: no routing decision has been recorded for this session.";
+  if (status.manual) return "Claude Jev: routing is paused because you selected a model manually.";
 
   const m = status.metrics ?? {};
   const request = status.jev?.request?.state;
   const recommendation = status.jev?.response?.answers?.model?.choice ?? status.tier ?? "unknown";
   return [
     `┌${"─".repeat(WIDTH)}┐`,
-    row("Jev Router"),
+    row("Claude Jev"),
     row(),
     row("Jev request"),
     ...wrapped("Prompt: ", status.prompt ?? "not recorded"),

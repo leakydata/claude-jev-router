@@ -14,20 +14,20 @@ const modelIn = (file) => JSON.parse(readFileSync(file, "utf8")).model;
 
 test("reads the saved model, ignoring a leftover sentinel", () => {
   assert.equal(readSavedModel(fileWith({ model: "opus" })), "opus");
-  assert.equal(readSavedModel(fileWith({ model: "jev-router" })), undefined);
+  assert.equal(readSavedModel(fileWith({ model: "claude-jev" })), undefined);
   assert.equal(readSavedModel(fileWith({})), undefined);
   assert.equal(readSavedModel(join(tmpdir(), "does-not-exist.json")), undefined);
 });
 
 test("restores the previous model when the sentinel was saved", () => {
-  const file = fileWith({ model: "jev-router", permissions: { deny: ["Bash(rm*)"] } });
+  const file = fileWith({ model: "claude-jev", permissions: { deny: ["Bash(rm*)"] } });
   assert.equal(restoreSavedModel("opus", file), true);
   assert.equal(modelIn(file), "opus");
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).permissions, { deny: ["Bash(rm*)"] });
 });
 
 test("removes the sentinel when there was no previous model", () => {
-  const file = fileWith({ model: "jev-router" });
+  const file = fileWith({ model: "claude-jev" });
   assert.equal(restoreSavedModel(undefined, file), true);
   assert.equal(modelIn(file), undefined);
 });

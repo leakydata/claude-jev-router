@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const LOG_FILE = join(homedir(), ".jev-claude.log");
+export const LOG_FILE = join(homedir(), ".claude-jev.log");
 
 // Claude Code owns the terminal in interactive mode and redraws over anything we print, so
 // writing to stderr there corrupts its UI. Log to a file instead and leave stderr alone.
