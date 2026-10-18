@@ -89,6 +89,10 @@ export const THRESHOLDS = {
    * writes and output, from two weeks of transcripts, price the saving per request.
    */
   switchHorizonRequests: 20,
+  // Haiku gets the quick question in the middle of real work, and the next turn goes back
+  // (Boswell Phone, 2026-10-18: one 2-request Haiku turn at 193K cost $0.21 against $0.04 for
+  // staying on Sonnet). So a move down to Haiku has to pay for itself within about a turn.
+  haikuHorizonRequests: 3,
   typicalWriteTokens: 5000,
   typicalOutputTokens: 400,
   /**

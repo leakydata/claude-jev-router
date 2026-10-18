@@ -47,7 +47,8 @@ export function switchPays(from, to, { contextTokens = 0, cache } = {}) {
     size * (rf.read - rt.read) +
     THRESHOLDS.typicalWriteTokens * (rf.write - rt.write) +
     THRESHOLDS.typicalOutputTokens * (rf.output - rt.output);
-  return extra <= THRESHOLDS.switchHorizonRequests * perRequest;
+  const horizon = to === "haiku" ? THRESHOLDS.haikuHorizonRequests : THRESHOLDS.switchHorizonRequests;
+  return extra <= horizon * perRequest;
 }
 
 /**

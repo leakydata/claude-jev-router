@@ -102,7 +102,7 @@ test("refuses a downgrade once rebuilding the cache costs more than it saves", (
 });
 
 test("moving a long conversation to Haiku pays sooner than to Sonnet", () => {
-  const big = { cache: { promptTokens: 400000, warm: { opus: 400000 } } };
+  const big = { cache: { promptTokens: 300000, warm: { opus: 300000 } } };
   assert.equal(switchPays("opus", "haiku", big), true);
   assert.equal(switchPays("opus", "sonnet", big), false);
 });
@@ -115,4 +115,10 @@ test("a turn that fell short is retried a tier up", () => {
   assert.equal(decide({ ...base, current: "haiku", jev: { ...split(0.9, 0.05, 0.05), fellShort: 0.9 } }).tier, "sonnet");
   assert.equal(decide({ ...base, current: "sonnet", jev: { ...missed, fellShort: 0.2 } }).tier, "sonnet");
   assert.equal(decide({ ...base, current: "opus", jev: missed }).tier, "opus", "never steps up into fable");
+});
+
+test("a quick question mid-conversation stays put unless Haiku pays back within a turn", () => {
+  const warmSonnet = (tokens) => ({ promptTokens: tokens, warm: { sonnet: tokens } });
+  assert.equal(switchPays("sonnet", "haiku", { cache: warmSonnet(193000) }), false, "Haiku's long-prompt rate makes a cold 193K write cost more than a turn saves");
+  assert.equal(switchPays("sonnet", "haiku", { cache: warmSonnet(40000) }), true, "a short conversation still moves down");
 });
