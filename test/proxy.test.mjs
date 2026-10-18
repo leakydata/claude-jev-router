@@ -452,11 +452,11 @@ test("model choices carry exact-model facts and flag older versions in a tier", 
   const { criteria } = questionForModels([
     { id: "claude-haiku-5-5", tier: "haiku" },
     { id: "claude-haiku-4-5", tier: "haiku" },
-    { id: "gpt-6-luna", tier: "haiku" },
+    { id: "some-future-model", tier: "haiku" },
   ]);
   assert.match(criteria["claude-haiku-5-5"].facts, /Haiku 5\.5/);
   assert.equal(criteria["claude-haiku-5-5"].version, undefined);
   assert.match(criteria["claude-haiku-4-5"].version, /claude-haiku-5-5 is newer/);
   assert.ok(criteria["claude-haiku-5-5"].good_for.length > 1);
-  assert.equal(criteria["gpt-6-luna"].facts, undefined, "non-Claude models get tier guidance only");
+  assert.equal(criteria["some-future-model"].facts, undefined, "unknown models get tier guidance only");
 });

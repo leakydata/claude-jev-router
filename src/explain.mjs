@@ -1,4 +1,4 @@
-const WIDTH = 33;
+const WIDTH = 41;
 const row = (text = "") => `│ ${text.slice(0, WIDTH - 2).padEnd(WIDTH - 2)} │`;
 const metric = (value) => (Number.isFinite(value) ? value.toFixed(2) : "n/a");
 const wrapped = (label, value) => {
@@ -27,7 +27,7 @@ export function formatExplanation(status) {
 
   const m = status.metrics ?? {};
   const request = status.jev?.request?.state;
-  const recommendation = status.jev?.response?.answers?.model_tier?.choice ?? status.tier ?? "unknown";
+  const recommendation = status.jev?.response?.answers?.model?.choice ?? status.tier ?? "unknown";
   return [
     `┌${"─".repeat(WIDTH)}┐`,
     row("Jev Router"),
@@ -43,7 +43,7 @@ export function formatExplanation(status) {
     row(`Tool complexity     ${metric(m.toolComplexity)}`),
     row(`Context size        ${metric(m.contextSize)}`),
     row(),
-    row(`Recommended tier: ${recommendation.toUpperCase()}`),
+    row(`Recommended: ${recommendation.toUpperCase()}`),
     row(`Selected model: ${(status.model ?? status.tier ?? "unknown").toUpperCase()}`),
     row(),
     row(`Confidence: ${status.confidence == null ? "n/a" : `${Math.round(status.confidence * 100)}%`}`),

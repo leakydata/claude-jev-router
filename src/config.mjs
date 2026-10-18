@@ -109,10 +109,10 @@ export const OVERRIDE_PATTERNS = TIERS.map((t) => ({
   tier: t.name,
   re: new RegExp(
     `\\b(?:use|switch to|with|on)\\s+(?:${{
-      haiku: "haiku|fast|luna",
-      sonnet: "sonnet|balanced|terra",
-      opus: "opus|strong|sol",
-      fable: "fable|long|astra",
+      haiku: "haiku|fast",
+      sonnet: "sonnet|balanced",
+      opus: "opus|strong",
+      fable: "fable|long",
     }[t.name]})\\b`,
     "i",
   ),
@@ -147,9 +147,8 @@ export const QUESTIONS = {
 };
 
 /**
- * What each tier is for, phrased as kinds of coding work. Tier-generic so the Codex router
- * can share it; facts about exact Claude models live in `MODEL_FACTS`. Jev reads literally,
- * so each list names concrete cases rather than adjectives.
+ * What each tier is for, phrased as kinds of coding work; facts about exact models live in
+ * `MODEL_FACTS`. Jev reads literally, so each list names concrete cases rather than adjectives.
  */
 const GUIDANCE = {
   haiku: {
@@ -208,8 +207,8 @@ const GUIDANCE = {
 
 /**
  * Facts about exact Claude models, keyed by API id; prices are per million input/output
- * tokens. Only ids listed here get a note, so an unknown or Codex model is described by its
- * tier alone. Update alongside `TIERS` when a new generation ships.
+ * tokens. Only ids listed here get a note, so an unknown model is described by its tier
+ * alone. Update alongside `TIERS` when a new generation ships.
  */
 const MODEL_FACTS = {
   "claude-haiku-5-5":

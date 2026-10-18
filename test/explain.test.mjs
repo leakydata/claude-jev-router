@@ -11,7 +11,7 @@ test("formats the last routing decision", () => {
     reason: "jev",
     jev: {
       request: { state: { session: { current_model: "haiku", context_tokens: 6200 } } },
-      response: { answers: { model_tier: { choice: "sonnet" } } },
+      response: { answers: { model: { choice: "claude-sonnet-5-5" } } },
     },
     metrics: {
       taskComplexity: 0.82,
@@ -25,7 +25,7 @@ test("formats the last routing decision", () => {
   assert.match(output, /Prompt: Explain the router/);
   assert.match(output, /Current tier: HAIKU/);
   assert.match(output, /Context tokens: 6200/);
-  assert.match(output, /Recommended tier: SONNET/);
+  assert.match(output, /Recommended: CLAUDE-SONNET-5-5/);
   assert.match(output, /Selected model: SONNET/);
   assert.match(output, /Confidence: 94%/);
   assert.match(output, /Decision: Jev recommendation/);
@@ -33,8 +33,8 @@ test("formats the last routing decision", () => {
 
 test("shows the concrete provider model when available", () => {
   assert.match(
-    formatExplanation({ tier: "haiku", model: "gpt-5.6-luna", confidence: 0.99 }),
-    /Selected model: GPT-5\.6-LUNA/,
+    formatExplanation({ tier: "haiku", model: "claude-haiku-5-5", confidence: 0.99 }),
+    /Selected model: CLAUDE-HAIKU-5-5/,
   );
 });
 

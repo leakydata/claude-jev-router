@@ -31,7 +31,7 @@ test("an explicit user override beats Jev", () => {
 
 test("detectOverride only fires on a real instruction", () => {
   assert.equal(detectOverride("switch to opus"), "opus");
-  assert.equal(detectOverride("use luna"), "haiku");
+  assert.equal(detectOverride("use fast"), "haiku");
   assert.equal(detectOverride("use strong"), "opus");
   assert.equal(detectOverride("the opus of his career"), null);
 });
