@@ -410,7 +410,7 @@ const OPUS_BASELINE = 0.05;
 
 /**
  * A warning when turns on a cheaper model fall short clearly more often than on Opus: at
- * least 15 turns, five points above the Opus rate, and the lower end of the 95% interval
+ * least 50 turns, five points above the Opus rate, and the lower end of the 95% interval
  * still above it. Null when nothing stands out.
  */
 export function weeklyWarning(s) {
@@ -426,7 +426,8 @@ export function weeklyWarning(s) {
   const baseline = opus?.turns >= 30 ? opus.short / opus.turns : OPUS_BASELINE;
   for (const tier of ["haiku", "sonnet"]) {
     const t = tiers[tier];
-    if (!t || t.turns < 15) continue;
+    // 33 Sonnet turns in the first week tripped it on one real miss and two debugging turns.
+    if (!t || t.turns < 50) continue;
     const rate = t.short / t.turns;
     if (rate - baseline >= 0.05 && wilson(t.short, t.turns)[0] > baseline) {
       return `${tier} turns fell short ${pct(rate)} of the time against ${pct(baseline)} on Opus (${t.turns} turns); consider raising enoughProbability`;
