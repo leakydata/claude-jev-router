@@ -346,7 +346,9 @@ export function applyAdvisor(body, tier, records = [], { allowed = true } = {}) 
         name: "advisor",
         model: ADVISOR.model,
         max_uses: ADVISOR.maxUses,
-        caching: { type: "ephemeral", ttl: "1h" },
+        // No prompt caching: consultations are usually hours apart, so a cache write (2x
+        // input for the hour) was rarely read back. In the first real days 1 of 4 was, and
+        // the three cold ones cost about $1.20 each at 130-157K.
       });
       if (typeof body.system === "string") body.system = [{ type: "text", text: body.system }];
       body.system = [...(body.system ?? []), { type: "text", text: ADVISOR.note }];

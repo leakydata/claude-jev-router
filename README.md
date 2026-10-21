@@ -221,13 +221,12 @@ attempt, and once before finishing long tasks); without it Sonnet almost never d
 
 - Sub-agents get it only when routed below the model they asked for.
 - Claude Code drops the consultations from the history it replays, so the proxy keeps them
-  per conversation and puts them back. That keeps the advice in view on later requests and
-  lets the advisor read its own prompt cache instead of rebuilding it.
+  per conversation and puts them back. That keeps the advice in view on later requests.
 - Requests on other models have consultations stripped and no advisor tool, so their cached
   prefix is unchanged.
-- Cost: the first consultation in a conversation writes its whole context into Opus's cache
-  (about $0.35 for a fresh session, $1.60 at 200K tokens); later ones read it back for a few
-  cents plus about 1.5K output tokens. `cj-report` lists consultations as their own
+- Cost: each consultation reads the conversation at Opus's input price, uncached, because
+  consultations are usually too far apart for a cache to be read back: about $0.60 at 150K
+  tokens, plus 4-14K output tokens ($0.10-0.30). `cj-report` lists consultations as their own
   `(advisor)` row, the status line counts them, and `cj-quality scan` reports
   `+advisor` turns apart.
 
