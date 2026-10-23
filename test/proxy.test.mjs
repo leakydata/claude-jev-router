@@ -719,3 +719,28 @@ test("advisor consultations are priced at the advisor's model", async () => {
   assert.equal(a.model, "claude-opus-5-5");
   assert.equal(a.cost.total, 8);
 });
+
+test("Claude Code's next-prompt suggestion stays on the turn's model without asking Jev", async (t) => {
+  let calls = 0;
+  const { seen, send } = await harness(t, async () => {
+    calls++;
+    return { choice: calls === 1 ? "claude-sonnet-5-5" : "claude-haiku-5-5", confidence: 0.99, ms: 1 };
+  });
+  const s = sid();
+  await send(turn(s, "cj-auto", "fix the parser"));
+  const suggest = turn(s, "cj-auto", "fix the parser");
+  suggest.messages.push({ role: "assistant", content: "Done." }, { role: "user", content: "[SUGGESTION MODE: Suggest what the user might naturally type next.]" });
+  await send(suggest);
+  assert.equal(calls, 1);
+  assert.equal(seen[1].model, "claude-sonnet-5-5");
+  assert.equal(readStatus(s).prompt, "fix the parser", "the suggestion is not published as a decision");
+});
+
+test("the model is told which model it is and that a proxy routes it", async (t) => {
+  const { seen, send } = await harness(t, async () => ({ choice: "claude-sonnet-5-5", confidence: 0.99, ms: 1 }));
+  const body = turn(sid(), "cj-auto", "who are you?");
+  body.system = [{ type: "text", text: "You are Claude Code." }, { type: "text", text: "You are powered by the model cj-auto. Today is Friday." }];
+  await send(body);
+  assert.match(seen[0].system[1].text, /powered by the model claude-sonnet-5-5, picked for this turn by claude-jev-router/);
+  assert.match(seen[0].system[1].text, /Anthropic API\. It logs API errors to ~\/\.claude-jev\.log\. Today is Friday\./);
+});

@@ -270,7 +270,7 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | --- | --- |
 | `JEV_API_KEY` | Enables routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_ALLOW_FABLE` | Enables the opt-in long tier. |
-| `JEV_DEBUG` | Logs decisions and rewrites to `~/.claude-jev.log` in interactive sessions. |
+| `JEV_DEBUG` | Also logs every decision and rewrite to `~/.claude-jev.log` in interactive sessions. API errors (status, model, request id) are logged there always. |
 | `JEV_DUMP` | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Disables the injected status line. |
 | `CJ_NO_DELEGATION_HINT` | Turns off the prompt hook that suggests sub-agents. |

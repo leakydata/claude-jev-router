@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import zlib from "node:zlib";
 import {
   ADVISOR,
+  AUTO_MODEL,
   TIERS,
   tierOf,
   idOf,
@@ -202,6 +203,22 @@ export function applyTier(body, tierName, model = idOf(tierName)) {
   return body;
 }
 
+/**
+ * Claude Code tells the model it is "powered by the model cj-auto", which leaves it unable to
+ * say what it is or where its requests go. Names the model the router picked and the proxy.
+ * The text only varies with the model, and each model has its own prompt cache anyway.
+ */
+export function nameServedModel(body) {
+  const said = `powered by the model ${AUTO_MODEL}.`;
+  const says =
+    `powered by the model ${body.model}, picked for this turn by claude-jev-router (cj), a local ` +
+    `proxy that routes each turn to Haiku, Sonnet or Opus and forwards it to the Anthropic API. ` +
+    `It logs API errors to ~/.claude-jev.log.`;
+  if (typeof body.system === "string") body.system = body.system.replace(said, says);
+  else for (const b of body.system ?? []) if (typeof b?.text === "string") b.text = b.text.replace(said, says);
+  return body;
+}
+
 /** Exact Claude models reported by the account, newest first; static ids are the cold-start fallback. */
 export function claudeModels(catalog = []) {
   const models = catalog
@@ -376,9 +393,10 @@ const DECOMPRESS = {
  * Reads the served model and token usage out of a Messages API response without touching
  * what the client receives: the response is copied through a decompressor of its own. Handles
  * a server-sent-event stream (`message_start`, then cumulative `message_delta` usage) and a
- * plain JSON body. Calls `onUsage(model, usage)` once, when the response ends.
+ * plain JSON body. Calls `onUsage(model, usage)` once, when the response ends, and `onError`
+ * for an error event the API sends after the stream has started.
  */
-export function readResponseUsage(stream, onUsage) {
+export function readResponseUsage(stream, onUsage, onError = () => {}) {
   const encoding = String(stream.headers?.["content-encoding"] ?? "").toLowerCase();
   let text = stream;
   if (encoding && encoding !== "identity") {
@@ -403,6 +421,8 @@ export function readResponseUsage(stream, onUsage) {
         usage = { ...event.message?.usage };
       } else if (event.type === "message_delta" && event.usage) {
         usage = { ...usage, ...event.usage };
+      } else if (event.type === "error") {
+        onError(event.error);
       } else if (event.type === "content_block_start") {
         content[event.index] = { ...event.content_block };
       } else if (event.type === "content_block_delta") {
@@ -510,9 +530,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
     // sub-agent starts from the model it asked for.
     const current = state.tier ?? ceilingTier ?? "opus";
     const prompt = newTurnPrompt(body);
-    const explaining = prompt?.includes("<cj-explain>");
+    // `/cj-explain` and Claude Code's next-prompt suggestion are asides on the conversation,
+    // not turns of it: they stay on the model whose cache is warm and leave the decision alone.
+    const aside = prompt?.includes("<cj-explain>") || prompt?.startsWith("[SUGGESTION MODE:");
     let fresh = null;
-    if (prompt && !explaining) {
+    if (prompt && !aside) {
       const models = claudeModels([...catalog.values()]).filter((model) =>
         availableTiers().includes(model.tier),
       );
@@ -655,6 +677,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
       let usageKey = null;
       let convoKey = null;
       let advised = false;
+      let sentModel = null;
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -684,6 +707,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           if (isAuto(body.model)) {
             if (isMain) manual.delete(session);
             advised = await routeRequest(body, { key, session, isMain, counting });
+            nameServedModel(body);
           } else if (!isMain && agentTurn && tierOf(body.model) && !manual.has(session)) {
             // A sub-agent asking for a concrete model: Claude or the agent's author picked it
             // as the strongest the task needs, so Jev may route the task down from it, never up.
@@ -700,6 +724,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               writeStatus(session, { manual: true, at: Date.now() });
             }
           }
+          sentModel = body.model;
           out = Buffer.from(JSON.stringify(body));
         } catch (err) {
           debug(`passthrough, could not process body: ${err.message}`);
@@ -750,6 +775,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             return;
           }
           res.writeHead(up.statusCode, up.headers);
+          // Always logged, so "check your inference gateway" has something to check: whether
+          // the API itself failed (and its request id for a support ticket) or the proxy did.
+          const failed = (status, detail) =>
+            log(`API ${status} for ${sentModel ?? "?"} ${convoKey ?? ""} request-id ${up.headers["request-id"] ?? "?"}${detail ? ` ${detail}` : ""}`);
+          if (up.statusCode >= 400 && sentModel) failed(up.statusCode);
           if (usageKey && up.statusCode === 200 && /^\/v1\/messages(?:\?|$)/.test(req.url ?? "")) {
             readResponseUsage(up, (model, usage, content) => {
               const records = advised ? adviceRecords(content) : [];
@@ -763,7 +793,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               if (advised) debug(`advisor usage ${JSON.stringify(usage.iterations ?? [])}`);
               recordUsage(usageKey, model, usage);
               noteCache(convoKey, model, usage);
-            });
+            }, (error) => failed("stream error", `${error?.type ?? ""} ${error?.message ?? ""}`.trim()));
           }
           // Report the model the API itself says it used, so the routing can be confirmed
           // from the wire rather than trusted from our own decision log. Claude Code's UI
@@ -782,7 +812,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         },
       );
       upstream.on("error", (e) => {
-        debug(`upstream error: ${e.message}`);
+        log(`proxy could not reach the API for ${sentModel ?? req.url}: ${e.message}`);
         if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
         res.end(JSON.stringify({ type: "error", error: { message: e.message } }));
       });
